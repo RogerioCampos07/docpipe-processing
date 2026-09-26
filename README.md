@@ -1,42 +1,54 @@
-# Python Project Template
+# DocPipe Processing
 
-Template base para iniciar projetos Python da organização **Campos Lab** com uma configuração mínima, padronizada e pronta para evolução.
+Microserviço de processamento de documentos do DocPipe. Nesta primeira etapa, o
+repositório oferece apenas uma aplicação HTTP mínima para validar a execução
+isolada e o ambiente de desenvolvimento. O processamento de documentos ainda
+não está disponível.
 
-## Visão geral
+## Requisitos
 
-Este repositório serve como base para novos projetos Python e inclui:
+- Python 3.13 ou superior (a versão local indicada em `.python-version` é 3.14.4)
+- `uv`
 
-- estrutura simples de aplicação
-- gerenciamento do projeto com `pyproject.toml`
-- testes automatizados com `pytest`
-- lint e formatação com `ruff`
-- automação de tarefas com `taskipy`
-- containerização com `Docker`
-- arquivo `docker-compose.yml` como base para futura configuração de serviços locais
+## Execução local
 
-## Estrutura do projeto
+```bash
+uv sync --locked
+uv run python main.py
+```
 
-- `src/` (opcional/recomendado): diretório para o código da aplicação.
-- `main.py`: ponto de entrada da aplicação. Atualmente funciona como placeholder e deve ser substituído pela lógica principal do projeto.
-- `tests/`: diretório para testes automatizados.
-- `pyproject.toml`: configuração do projeto, dependências e tarefas.
-- `Dockerfile`: definição da imagem para executar a aplicação em container.
-- `docker-compose.yml`: placeholder para orquestração local, a ser configurado conforme as necessidades de cada projeto.
+A aplicação escuta em `127.0.0.1:8000` por padrão. Configure `PROCESSING_HOST` e
+`PROCESSING_PORT` no ambiente para alterar o endereço e a porta, respectivamente.
+Não há serviços externos necessários para esta etapa.
 
-## Pré-requisitos
+Em outro terminal, confira a resposta HTTP:
 
-- Python 3.13+ para execução local (`Dockerfile` usa Python 3.14 por padrão)
-- `uv` instalado
-- opcionalmente: Docker e Docker Compose
+```bash
+curl --fail-with-body http://127.0.0.1:8000/health
+```
 
-> Para manter maior paridade entre o ambiente local e o container, prefira utilizar Python 3.14 durante o desenvolvimento.
+Resposta esperada: `{"status":"ok"}`. A rota indica apenas que a aplicação está
+respondendo; ela não verifica dependências futuras.
 
-## Criando um projeto a partir do template
+## Verificações
 
-1. No GitHub, clique em **Use this template** e crie um novo repositório para o projeto.
+```bash
+uv run task lint
+uv run ruff format --check
+uv run pytest
+uv run task test
+uv run typos
+```
 
-2. Clone o novo repositório:
+Os testes atuais verificam somente a rota de saúde. A tarefa `task test` gera um
+relatório de cobertura em `htmlcov/`.
 
-   ```bash
-   git clone <url-do-novo-repositorio>
-   cd <nome-do-repositorio>
+## Estrutura atual
+
+- `docpipe_processing/app.py`: aplicação HTTP e rota de saúde.
+- `main.py`: inicializador local.
+- `tests/`: testes automatizados do comportamento implementado.
+- `pyproject.toml` e `uv.lock`: dependências e ferramentas de desenvolvimento.
+
+O `Dockerfile` e o `docker-compose.yml` vêm do template. A configuração e a
+validação da execução em container pertencem a uma etapa posterior.
