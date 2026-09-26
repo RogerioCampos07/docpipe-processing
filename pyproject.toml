@@ -1,7 +1,7 @@
 [project]
-name = "python-project-template"
+name = "docpipe-processing"
 version = "0.1.0"
-description = "Add your description here"
+description = "Document processing microservice for the DocPipe pipeline, responsible for consuming ingestion events, processing stored documents, and publishing results for downstream services."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = []
@@ -36,5 +36,5 @@ lint = 'ruff check'
 pre_format = 'ruff check --fix'
 format = 'ruff format'
 pre_test = 'task lint'
-test = 'pytest -s -x --cov=python_project_template -vv'
+test = 'pytest -s -x --cov=docpipe_processing -vv'
 post_test = 'coverage html'
