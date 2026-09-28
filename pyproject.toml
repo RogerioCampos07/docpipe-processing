@@ -6,6 +6,10 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.141.1",
+    "opentelemetry-api>=1.45.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.0",
+    "opentelemetry-sdk>=1.45.0",
+    "prometheus-client>=0.26.0",
     "uvicorn>=0.54.0",
 ]
 
@@ -33,12 +37,21 @@ quote-style = 'single'
 
 [tool.pytest.ini_options]
 pythonpath = "."
-addopts = '-p no:warnings'
+addopts = '-p no:warnings --strict-markers'
+markers = [
+    'unit: tests for isolated behavior',
+    'integration: tests joining implemented components',
+    'contract: tests for verified external contracts',
+    'persistence: tests for Processing-owned persistence',
+    'consumer: tests for the message consumer',
+    'storage: tests for the storage adapter',
+    'e2e: tests for the implemented end-to-end flow',
+]
 
 [tool.taskipy.tasks]
 lint = 'ruff check'
 pre_format = 'ruff check --fix'
 format = 'ruff format'
 pre_test = 'task lint'
-test = 'pytest -s -x --cov=docpipe_processing -vv'
+test = 'pytest --cov=docpipe_processing --cov-report=term-missing --cov-fail-under=80 -vv'
 post_test = 'coverage html'
