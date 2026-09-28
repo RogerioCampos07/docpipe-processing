@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: 0.9.26
+          python-version: '3.14.4'
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked
+      - run: uv run task lint
+      - run: uv run ruff format --check
+      - run: uv run typos
+
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: 0.9.26
+          python-version: '3.14.4'
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked
+      - run: >-
+          uv run pytest --cov=docpipe_processing
+          --cov-report=term-missing --cov-fail-under=80
+
+  container-smoke:
+    name: container-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build --tag docpipe-processing:ci .
+      - name: Start container and check health and metrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          container_name=docpipe-processing-smoke
+          docker run --detach \
+            --name "$container_name" \
+            --publish 127.0.0.1:18000:8000 \
+            --env PROCESSING_HOST=0.0.0.0 \
+            --env PROCESSING_PORT=8000 \
+            docpipe-processing:ci
+
+          cleanup() {
+            docker logs "$container_name" || true
+            docker stop --time 5 "$container_name" >/dev/null 2>&1 || true
+            docker rm "$container_name" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          healthy=0
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:18000/health >/dev/null; then
+              healthy=1
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$healthy" -ne 1 ]]; then
+            echo 'Container did not become healthy in 30 seconds.'
+            exit 1
+          fi
+
+          metrics_payload="$(curl --fail --silent --show-error http://127.0.0.1:18000/metrics)"
+          grep -q 'docpipe_http_requests_total' <<< "$metrics_payload"
