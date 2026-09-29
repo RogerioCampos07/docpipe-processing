@@ -33,22 +33,47 @@ respondendo; ela não verifica dependências futuras.
 ## Verificações
 
 ```bash
+uv sync --locked
 uv run task lint
 uv run ruff format --check
 uv run pytest
 uv run task test
 uv run typos
+docker build -t docpipe-processing:local .
 ```
 
-Os testes atuais verificam somente a rota de saúde. A tarefa `task test` gera um
-relatório de cobertura em `htmlcov/`.
+`uv run task test` aplica o limite inicial de 80% de cobertura para
+`docpipe_processing` e gera um relatório HTML em `htmlcov/`. A CI executa lint,
+formatação, typos, testes com cobertura e o smoke test do container em Pull
+Requests.
+
+Para validar a imagem localmente, inicie-a e consulte a saúde e as métricas:
+
+```bash
+docker run --rm -d --name docpipe-processing-smoke -p 127.0.0.1:18000:8000 docpipe-processing:local
+curl --fail http://127.0.0.1:18000/health
+curl --fail http://127.0.0.1:18000/metrics
+docker stop docpipe-processing-smoke
+```
+
+O container escuta em `0.0.0.0:8000`; a execução local continua usando
+`127.0.0.1:8000` por padrão. `/health` verifica apenas que a API responde.
+`/metrics` expõe métricas HTTP e do processo com rótulos de baixa cardinalidade.
+Os logs da API são JSON e não incluem corpos de requisição. A API extrai o
+contexto W3C `traceparent`; a exportação OTLP fica desativada por padrão e pode
+ser habilitada definindo `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`.
+
+O protocolo experimental inicial e suas dependências estão em
+[`experiments/README.md`](experiments/README.md). Os cenários que dependem de
+worker, persistência, RabbitMQ, storage ou extração ainda não são executáveis.
 
 ## Estrutura atual
 
 - `docpipe_processing/app.py`: aplicação HTTP e rota de saúde.
+- `docpipe_processing/observability.py`: logs JSON da aplicação.
 - `main.py`: inicializador local.
 - `tests/`: testes automatizados do comportamento implementado.
+- `.github/workflows/ci.yml`: checks de qualidade, testes e smoke do container.
 - `pyproject.toml` e `uv.lock`: dependências e ferramentas de desenvolvimento.
 
-O `Dockerfile` e o `docker-compose.yml` vêm do template. A configuração e a
-validação da execução em container pertencem a uma etapa posterior.
+O `docker-compose.yml` permanece sem serviços auxiliares nesta etapa.
