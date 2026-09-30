@@ -1,0 +1,14 @@
+{
+  "event_id": "evt-synthetic-0001",
+  "event_type": "document.received",
+  "event_version": 1,
+  "occurred_at": "2026-01-01T12:00:00.123456Z",
+  "correlation_id": null,
+  "document_id": "doc-synthetic-0001",
+  "data": {
+    "storage_key": "opaque-object-key-0001",
+    "media_type": "application/pdf; charset=binary",
+    "size_bytes": 0,
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}
