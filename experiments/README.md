@@ -3,11 +3,20 @@
 ## Estado nesta etapa
 
 Este documento define o protocolo e as dependências do ensaio. Nenhum baseline
-de processamento foi executado: o repositório ainda não tem worker, persistência,
-consumidor RabbitMQ, adaptador de storage ou extração de documentos. Não há
-resultados medidos nesta etapa.
+de processamento foi executado: o repositório ainda não tem worker,
+consumidor RabbitMQ, adaptador de storage ou extração de documentos. Domínio,
+persistência própria e contrato de entrada já possuem implementação e testes
+isolados; isso não comprova o fluxo experimental completo. Não há resultados
+medidos nesta etapa.
 
 O ensaio é manual e separado da CI de Pull Requests. Não use documentos reais.
+
+Conforme a [diretriz de autonomia](../docs/DESIGN.md), seção 2.1, o ensaio do
+Processing deve usar entradas sintéticas compatíveis com o contrato público e
+a infraestrutura necessária, sem exigir Ingestion ou consumidor posterior em
+execução. Não use checkout, fixtures privadas, banco ou filesystem interno de
+outro serviço. Ensaios conjuntos são complementares e não substituem essa
+demonstração isolada.
 
 ## Protocolo quando os componentes estiverem disponíveis
 

@@ -1,9 +1,21 @@
 # `document.received.v1`
 
 This is the public, versioned input contract implemented by DocPipe Processing.
-Any producer may publish a conforming JSON payload. The Processing model and
-tests are its own implementation; producers do not share Python code with this
-repository.
+Any authorized producer may supply a conforming JSON payload. The Processing
+model and tests are its own implementation; producers do not share Python code
+with this repository.
+
+This public boundary allows compatible producers to be replaced without changes
+to Processing's domain. Validation requires neither another repository nor a
+running producer. Authorization is a separate integration concern; structural
+payload validation does not establish a producer's permission to participate.
+See the [architecture decision](../DESIGN.md), section 2.1.
+
+Object references are explicit in this contract. Future retrieval must use a
+public storage interface and a Processing-owned adapter, never the producer's
+private filesystem or database. Infrastructure may be shared without sharing
+internal state. This autonomy rule does not change the payload or identifier
+rules below.
 
 ## Identity and version
 
