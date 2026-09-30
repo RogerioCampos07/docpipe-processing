@@ -20,6 +20,17 @@ A aplicação escuta em `127.0.0.1:8000` por padrão. Configure `PROCESSING_HOST
 `PROCESSING_PORT` no ambiente para alterar o endereço e a porta, respectivamente.
 Não há serviços externos necessários para esta etapa.
 
+## Contrato de entrada
+
+O Processing valida o contrato público versionado `document.received.v1` sem
+depender do runtime ou do código de qualquer produtor. A especificação está em
+[`docs/contracts/document_received_v1.md`](docs/contracts/document_received_v1.md).
+Execute os testes sintéticos do contrato com:
+
+```bash
+uv run pytest -m contract
+```
+
 ## Persistência local
 
 O banco local inicial é SQLite. Por padrão, o Processing usa
