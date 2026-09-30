@@ -2,9 +2,9 @@
 
 ## 1. Contexto e premissas
 
-O `docpipe-processing` é um microserviço independente que recebe documentos já aceitos pelo `docpipe-ingestion`. Seu trabalho começa após o evento `document.received.v1`: localizar o original no armazenamento compartilhado, extrair seu texto e registrar o resultado e o estado do processamento. O aceite HTTP do Ingestion não depende da conclusão desta etapa.
+O `docpipe-processing` é um microserviço independente cuja responsabilidade é processar documentos referenciados por `document.received.v1`: localizar o original no armazenamento, extrair seu texto e registrar o resultado e o estado do processamento. A entrada pode vir de qualquer produtor autorizado e compatível com o contrato público, incluindo o `docpipe-ingestion`. O aceite HTTP do Ingestion não depende da conclusão desta etapa.
 
-Este documento orienta a implementação inicial da `v1.0.0`. Ele parte dos contratos documentados no Ingestion e deve ser confrontado com o código e os testes atuais daquele repositório antes de fixar a integração. O `PLAN.md` específico do Processing governa a ordem das etapas. Conforme a decisão do projeto, as capacidades mínimas de carga e resiliência previstas para uma etapa posterior devem entrar já na Etapa 2, sem antecipar conclusões experimentais.
+Este documento orienta a implementação inicial da `v1.0.0`. A integração tem como fonte o contrato público versionado; código e testes do Ingestion, quando disponíveis, servem apenas como evidência de compatibilidade daquele produtor. Sua inspeção não cria dependência entre repositórios. O `PLAN.md` específico do Processing governa a ordem das etapas. Conforme a decisão do projeto, as capacidades mínimas de carga e resiliência previstas para uma etapa posterior devem entrar já na Etapa 2, sem antecipar conclusões experimentais.
 
 ## 2. Responsabilidades e limites
 
@@ -17,15 +17,42 @@ Este documento orienta a implementação inicial da `v1.0.0`. Ele parte dos cont
 | Disponibilizar consulta e sinais operacionais próprios | Não hospedar a stack central de observabilidade |
 | Emitir um evento de conclusão após persistir o resultado | Não pressupor que consumidores posteriores já existam |
 
-Cada serviço mantém seu próprio repositório, banco, migrations, imagem, testes e CI. O resultado de processamento não altera o registro de ingestão; uma visão agregada do documento pertencerá a uma composição futura entre serviços.
+O resultado de processamento não altera o registro de ingestão; uma visão agregada do documento pertencerá a uma composição futura entre serviços.
+
+### 2.1. Decisão obrigatória: autonomia dos microsserviços
+
+Todos os microsserviços do DocPipe devem ser desacoplados, independentes e possuir utilidade própria. Cada um deve executar sua responsabilidade de negócio delimitada sem exigir outros microsserviços em execução.
+
+- Cada serviço possui repositório, domínio, banco de dados, migrations, configuração, imagem, testes e CI próprios.
+- Instalação, build, inicialização, testes e implantação não podem exigir checkout nem execução de outro microsserviço. A evolução e a implantação são independentes, respeitando a compatibilidade dos contratos públicos.
+- A integração ocorre exclusivamente por contratos públicos e versionados. Cada serviço mantém sua própria representação; produtores e consumidores autorizados e compatíveis podem ser substituídos sem mudanças no domínio do serviço.
+- É proibido importar código interno, classes de domínio ou modelos ORM de outro serviço, consultar suas tabelas ou depender de seu filesystem privado. Por exemplo: importar `DocumentReceivedEvent` do pacote do Ingestion, consultar o banco de ingestão para completar um evento ou montar seu diretório privado de documentos no Processing.
+- Referências externas a documentos e objetos devem estar explícitas no contrato. O acesso ocorre por interfaces públicas de armazenamento e adaptadores próprios, usando referências opacas, sem descobrir caminhos ou consultar estruturas internas do produtor.
+- Banco de dados, RabbitMQ e armazenamento de objetos continuam sendo dependências legítimas. Operação isolada pressupõe a infraestrutura necessária ao próprio serviço; compartilhar uma instância física não autoriza compartilhar tabelas, modelos ou estado interno.
+- A colaboração assíncrona preserva entrega pelo menos uma vez, idempotência e rastreabilidade conforme os contratos e políticas aplicáveis. Autonomia não promete processamento exatamente uma vez nem altera identificadores ou regras de correlação.
+- Autonomia não exige criar API HTTP, CLI ou novo modo de execução. As interfaces devem atender à responsabilidade existente de cada serviço.
+
+**Aplicação ao DocPipe:** receber, registrar e armazenar documentos dá utilidade própria ao Ingestion, sem exigir Processing nem conclusão das etapas posteriores. O Processing deve transformar documentos referenciados por entradas compatíveis em resultado e estado próprios, sem código, banco ou runtime do Ingestion. Não se exige consumidor posterior em execução para concluir sua responsabilidade; a publicação segue as garantias de entrega definidas. Não há responsabilidades de outros serviços suficientemente definidas neste repositório para atribuir novas funcionalidades.
+
+### 2.2. Estado observado e evidências ainda necessárias
+
+O estado implementado deve ser distinguido do fluxo previsto nas seções seguintes:
+
+- `docpipe_processing/contracts.py` valida o contrato com modelos próprios; `tests/test_contracts.py` usa payloads e fixture JSON locais, sem produtor ou broker.
+- `docpipe_processing/domain.py` define `ProcessingJob` sem importar o contrato externo. `persistence.py` e `migrations/` mantêm estado próprio, SQLite por padrão e unicidade de `source_event_id`; os testes de persistência usam bancos temporários próprios.
+- `pyproject.toml`, `Dockerfile` e `.github/workflows/ci.yml` usam dependências, checkout, build e testes do Processing. A aplicação atual expõe saúde e métricas; não executa o pipeline de documentos.
+
+Na inspeção desses artefatos não foi encontrada dependência técnica do código, banco ou runtime do Ingestion. Isso não comprova autonomia do fluxo completo: consumidor, recuperação do objeto, extração e publicação ainda não estão implementados. Nas etapas correspondentes, será necessário demonstrar o fluxo com entradas sintéticas compatíveis e infraestrutura própria, sem outros microsserviços, incluindo substituição do produtor e ausência de consumidor posterior. Autorização de produtores também não é garantida pela validação estrutural do payload.
+
+O repositório do Ingestion não estava disponível nesta revisão; sua compatibilidade e operação independente não foram verificadas. Esta decisão registra a obrigação arquitetural, sem afirmar adequações técnicas concluídas em outros serviços.
 
 ## 3. Contrato de entrada
 
-O evento existente tem nome lógico `document.received.v1` e envelope com `event_id`, `event_type: document.received`, `event_version: 1`, `occurred_at`, `correlation_id`, `document_id` e `data.storage_key`, `data.media_type`, `data.size_bytes`, `data.sha256`. O corpo não contém arquivo, URL pública ou credenciais. O carrier W3C Trace Context é propagado pelos headers AMQP, sem mudança no corpo do evento.
+O contrato de entrada implementado tem nome lógico `document.received.v1` e envelope com `event_id`, `event_type: document.received`, `event_version: 1`, `occurred_at`, `correlation_id`, `document_id` e `data.storage_key`, `data.media_type`, `data.size_bytes`, `data.sha256`. As regras vigentes estão na [especificação pública](contracts/document_received_v1.md): IDs externos são strings opacas não vazias nem compostas apenas de whitespace; `correlation_id` pode estar ausente, ser `null` ou uma string válida. O `processing_id` interno continua sendo UUID, distinto dos IDs externos. O corpo não contém arquivo, URL pública ou credenciais. W3C Trace Context pertence aos headers de transporte; sua integração AMQP ainda será implementada.
 
-Antes de implementar o consumidor, conferir no código do Ingestion o exchange, routing key, fila, bindings, política de confirmação e nomes exatos dos headers. Esses detalhes não são definidos pelo envelope e não devem ser inventados como contratos existentes. O Processing valida versão, identificadores, tipo, tamanho e checksum; rejeições permanentes devem ficar diagnosticáveis, sem repetição infinita.
+Antes de implementar o consumidor, verificar a especificação pública de transporte e a compatibilidade do produtor quanto a exchange, routing key, fila, bindings, política de confirmação e nomes exatos dos headers. O código do Ingestion, se disponível, é evidência complementar, sem se tornar requisito de instalação ou execução. Esses detalhes não são definidos pelo envelope e não devem ser inventados como contratos existentes. O Processing já valida a estrutura do evento; a conferência de tamanho e checksum do arquivo pertence à recuperação futura. Rejeições permanentes devem ficar diagnosticáveis, sem repetição infinita.
 
-A entrega do Ingestion é **pelo menos uma vez**. `event_id` é a chave para deduplicar a entrega; `document_id` identifica o documento. O recebimento repetido do mesmo evento não pode disparar duas conclusões lógicas nem duplicar resultados. Uma nova versão ou solicitação explícita de reprocessamento exigirá contrato próprio, sem reutilizar silenciosamente a mesma chave de idempotência.
+A garantia arquitetural de entrega permanece **pelo menos uma vez**, inclusive na integração prevista com o Ingestion. `event_id` é a chave para deduplicar a entrega; `document_id` identifica o documento. O recebimento repetido do mesmo evento não pode disparar duas conclusões lógicas nem duplicar resultados. Uma nova versão ou solicitação explícita de reprocessamento exigirá contrato próprio, sem reutilizar silenciosamente a mesma chave de idempotência.
 
 ## 4. Fluxo de processamento
 
@@ -55,7 +82,7 @@ Estados conceituais: `RECEIVED`, `PROCESSING`, `COMPLETED`, `RETRY_WAIT` e `FAIL
 
 O banco do Processing é privado e possui migrations próprias. SQLite pode atender à execução simples em instância única; PostgreSQL é a opção para experimentos com workers concorrentes. Não compartilhar tabelas ou schema lógico com o Ingestion, mesmo quando a infraestrutura PostgreSQL física for comum no laboratório.
 
-Para integração ponta a ponta, o original precisa estar acessível aos dois serviços por meio de armazenamento compartilhado e privado, como Azurite no laboratório local. O caminho `dataset/documents/` do modo simples do Ingestion pertence àquele serviço e não deve ser assumido como volume implicitamente compartilhado. O Processing recebe a chave opaca do evento e configura o acesso por seu próprio adaptador e credenciais de mínimo privilégio. Resultados derivados usam namespace/container próprio e nunca sobrescrevem o original.
+Para integração ponta a ponta, o produtor deve disponibilizar o original ao Processing por interface pública de armazenamento privado, como Azurite no laboratório local, sem exigir seu próprio runtime para a recuperação. A referência anterior ao caminho `dataset/documents/` do Ingestion não constitui contrato nem autoriza montá-lo como volume compartilhado; detalhes internos daquele repositório não foram verificados nesta revisão. O Processing recebe a chave opaca do evento e configura o acesso por seu próprio adaptador e credenciais de mínimo privilégio. Resultados derivados usam namespace/container próprio e nunca sobrescrevem o original.
 
 Se a escrita do artefato derivado for confirmada, mas a transação do banco falhar, pode restar um órfão. A reconciliação deve identificar esse caso antes de qualquer exclusão. O conteúdo extraído não deve aparecer em eventos, logs, métricas ou traces.
 
@@ -72,7 +99,7 @@ Uma API administrativa mínima pode expor liveness, readiness, métricas e consu
 - Proteger o worker contra documentos malformados, PDFs grandes ou comprimidos de forma adversarial e custo excessivo de OCR; processar dados sintéticos nos ensaios.
 - Nunca incluir conteúdo do documento ou texto extraído em logs, traces, métricas, mensagens ou respostas operacionais.
 - Configurar segredos fora da imagem; restringir acesso a originais e resultados e documentar retenção e exclusão antes de dados pessoais reais.
-- Fazer o Processing tolerar duplicatas, interrupções e indisponibilidade temporária do Ingestion após a publicação do evento.
+- Fazer o Processing tolerar duplicatas e interrupções sem exigir que o produtor esteja em execução após disponibilizar o evento e o objeto pela infraestrutura contratada.
 
 ## 9. Observabilidade e experimentos desde a Etapa 2
 
@@ -88,7 +115,7 @@ AKS, recursos Azure reais, deployment cloud e Kubernetes ficam para `v1.1.0` ou 
 
 ## 11. Decisões pendentes antes de fixar contratos
 
-1. Validar a topologia AMQP e o envelope efetivo no Ingestion; registrar exemplo real de mensagem e headers.
+1. Definir a integração AMQP pública e verificar compatibilidade dos produtores, incluindo o Ingestion quando seus artefatos estiverem disponíveis; registrar evidências de mensagem e headers sem alterar o contrato de entrada já implementado nem exigir checkout de outro serviço.
 2. Escolher motor(es) de extração e OCR, idiomas, dependências, licenças e limites de recursos para o ambiente do TCC.
 3. Definir política para PDF com texto parcial, ausência de texto, páginas ilegíveis e formatos corrompidos.
 4. Fixar formato e retenção do artefato derivado e regras de acesso ao texto.

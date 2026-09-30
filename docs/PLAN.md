@@ -4,9 +4,9 @@
 
 O **Processing** é o microserviço responsável pelo processamento dos documentos recebidos pelo DocPipe após a etapa de ingestão.
 
-Ele deverá operar de forma independente do microserviço **Ingestion**, comunicando-se por contratos bem definidos e processamento assíncrono.
+Ele deverá operar sem exigir outros microsserviços em execução, recebendo entradas de qualquer produtor autorizado e compatível por contratos públicos versionados e processamento assíncrono.
 
-O serviço deve ser desenvolvido e testado isoladamente, mantendo baixo acoplamento com os demais componentes do DocPipe.
+O serviço deve ser desenvolvido, instalado, construído, iniciado, testado e implantado sem checkout ou runtime de outros microsserviços. A diretriz obrigatória e as evidências atuais estão nas seções 2.1 e 2.2 do [DESIGN](DESIGN.md). Esta atualização acrescenta critérios de autonomia, preserva a sequência das etapas e não declara adequações técnicas concluídas.
 
 ---
 
@@ -28,26 +28,25 @@ O Processing não deverá assumir responsabilidades pertencentes ao Ingestion.
 
 ## 3. Relação com o Ingestion
 
-O fluxo esperado é:
+Um fluxo de colaboração esperado é:
 
 **Documento → Ingestion → armazenamento → evento → Processing**
 
-O Ingestion é responsável por receber e registrar a entrada do documento.
+O Ingestion é responsável por receber, registrar e armazenar documentos, com utilidade própria sem Processing ou conclusão de etapas posteriores. Essa é uma obrigação arquitetural; a implementação do Ingestion não foi verificada neste repositório.
 
 Depois que o documento estiver disponível, o Ingestion publica um evento no broker.
 
 O Processing consome esse evento e inicia seu trabalho.
 
-O Processing não deve depender diretamente do banco de dados interno do Ingestion.
+O Processing deve executar sua responsabilidade sem código, banco, filesystem privado ou runtime do Ingestion. Um produtor autorizado e compatível pode substituí-lo sem mudar o domínio do Processing.
 
 A integração deve ocorrer através de:
 
-- mensagens;
-- contratos de eventos;
-- identificadores;
-- armazenamento compartilhado quando necessário.
+- contratos públicos versionados de mensagens e eventos;
+- identificadores e referências opacas definidos nesses contratos;
+- interfaces públicas de armazenamento com adaptadores próprios, quando necessário.
 
-Cada microserviço mantém seus próprios dados e responsabilidades.
+Cada microserviço mantém seus próprios dados e responsabilidades. Banco, RabbitMQ e armazenamento são infraestrutura permitida para operação isolada. Compartilhar instâncias não autoriza compartilhar tabelas, modelos ou estado interno. Autonomia não exige nova API HTTP, CLI ou modo de execução.
 
 ---
 
@@ -150,7 +149,7 @@ Configurar as validações adotadas pelo projeto, incluindo:
 
 ### GitHub Actions
 
-Criar o pipeline de integração contínua seguindo, quando aplicável, o padrão já consolidado no Ingestion.
+Criar o pipeline de integração contínua próprio seguindo, quando aplicável, as convenções do projeto, sem depender do checkout, testes ou runtime do Ingestion.
 
 O CI deverá executar automaticamente as validações relevantes para cada mudança.
 
@@ -249,9 +248,9 @@ Resultado esperado:
 
 ## Etapa 5 — Contrato de entrada
 
-Definir formalmente o evento produzido pelo Ingestion e consumido pelo Processing.
+Definir formalmente o contrato público versionado aceito pelo Processing, implementado localmente e utilizável por qualquer produtor autorizado e compatível.
 
-O contrato deverá fornecer informações suficientes para localizar e identificar o documento sem expor detalhes internos desnecessários do Ingestion.
+O contrato deverá fornecer informações suficientes para localizar e identificar o documento sem expor detalhes internos do produtor. A especificação vigente é [document.received.v1](contracts/document_received_v1.md); esta diretriz preserva suas regras, incluindo identificadores opacos e `correlation_id` opcional e anulável.
 
 Deverão ser considerados:
 
@@ -263,7 +262,7 @@ Deverão ser considerados:
 - correlation ID;
 - metadados estritamente necessários.
 
-O contrato deverá possuir testes próprios.
+O contrato deverá possuir testes próprios com payloads e fixtures sintéticos locais, sem código, fixtures privadas ou runtime de outro serviço e sem broker para validar o schema.
 
 ---
 
@@ -283,7 +282,7 @@ O consumidor deverá:
 
 A política de ACK, retry e mensagens problemáticas deverá ser explicitamente documentada.
 
-Adicionar testes do consumidor e testes de integração com o broker.
+Adicionar testes do consumidor e testes de integração com o broker, usando produtores sintéticos compatíveis sem exigir Ingestion. Preservar as garantias definidas de entrega, idempotência e rastreabilidade.
 
 ---
 
@@ -301,7 +300,7 @@ O Processing deverá:
 - identificar falhas de acesso;
 - diferenciar erros temporários de erros permanentes quando possível.
 
-O Processing não deverá depender do filesystem interno do Ingestion.
+O Processing deverá usar a referência explícita no contrato por interface pública de armazenamento e adaptador próprio, sem depender do filesystem interno ou runtime de qualquer produtor.
 
 Adicionar testes da integração com armazenamento.
 
@@ -329,9 +328,9 @@ Após o processamento, o serviço deverá produzir um evento representando seu r
 
 Fluxo esperado:
 
-**Ingestion → evento de entrada → Processing → evento de resultado**
+**Produtor autorizado e compatível → evento de entrada → Processing → evento de resultado**
 
-O evento deverá permitir que o próximo microserviço do DocPipe continue o fluxo sem conhecer detalhes internos do Processing.
+O evento deverá permitir que um consumidor autorizado e compatível continue o fluxo sem conhecer detalhes internos do Processing. Não exigir que esse consumidor esteja em execução para concluir o trabalho do Processing; preservar as garantias de publicação definidas.
 
 Devem existir contratos apropriados para situações como:
 
@@ -343,7 +342,7 @@ Nesta etapa deverá ser validado também o fluxo integrado do Processing:
 
 **evento → consumo → recuperação do documento → processamento → persistência → publicação do resultado**
 
-Os testes end-to-end aplicáveis deverão ser incorporados ao CI criado na Etapa 2.
+Os testes end-to-end aplicáveis deverão ser incorporados ao CI criado na Etapa 2. Demonstrar o fluxo com infraestrutura necessária, entradas sintéticas e sem outros microsserviços; ensaios entre serviços podem complementar essa evidência, sem se tornarem requisito de execução isolada.
 
 Resultado esperado:
 
@@ -381,6 +380,8 @@ Os ensaios pesados poderão ser executados em infraestrutura externa ao notebook
 ---
 
 ## Fluxo esperado
+
+O fluxo abaixo ilustra a composição possível do DocPipe. Não exige executar todos os serviços juntos; produtores e consumidores compatíveis podem ser substituídos nas fronteiras públicas.
 
 ```text
 Documento
@@ -423,7 +424,7 @@ Não incluir prematuramente:
 - dependências diretas dos bancos dos demais microserviços;
 - funcionalidades pertencentes aos microserviços posteriores.
 
-Esses componentes deverão ser introduzidos nas etapas apropriadas do projeto global.
+As evoluções permitidas deverão ser introduzidas nas etapas apropriadas do projeto global. Dependências diretas de bancos ou estruturas internas de outros serviços permanecem proibidas, inclusive em evoluções futuras.
 
 ---
 
@@ -436,6 +437,16 @@ receber evento → validar → localizar documento → processar → persistir r
 ```
 
 Esse fluxo deverá possuir testes automatizados e ser reproduzível no ambiente local do DocPipe.
+
+Critérios verificáveis de autonomia, a comprovar nas etapas pertinentes:
+
+- instalar, construir, iniciar, testar e implantar com apenas este checkout e a infraestrutura necessária ao Processing;
+- validar entradas de produtores sintéticos compatíveis usando modelos e fixtures próprios, preservando o contrato público vigente;
+- executar o fluxo de negócio sem Ingestion e sem consumidor posterior, mantendo entrega, idempotência e rastreabilidade;
+- acessar somente banco próprio e objetos explicitamente referenciados pelo contrato, através de interfaces públicas;
+- demonstrar que a substituição de produtor ou consumidor compatível e a implantação independente não exigem mudanças no domínio.
+
+Esses critérios não significam que o fluxo completo já esteja implementado ou validado. Não antecipam as Etapas 6 a 9 nem exigem novas interfaces apenas para demonstrar autonomia.
 
 Além disso, o repositório deverá possuir integração contínua capaz de impedir que alterações que violem os critérios de qualidade definidos sejam incorporadas à `main`.
 

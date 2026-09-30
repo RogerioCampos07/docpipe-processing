@@ -4,6 +4,26 @@ Microserviço de processamento de documentos do DocPipe. O repositório inclui
 uma aplicação HTTP mínima e persistência própria para o estado dos trabalhos.
 A extração e o processamento dos documentos ainda não estão disponíveis.
 
+## Autonomia do serviço
+
+A responsabilidade de negócio prevista é transformar documentos referenciados
+por eventos compatíveis em resultado e estado próprios, com utilidade para
+qualquer produtor autorizado que cumpra o contrato. Isso deve funcionar sem
+Ingestion ou consumidores posteriores em execução. A diretriz obrigatória,
+os limites e as lacunas atuais estão no [DESIGN](docs/DESIGN.md), seção 2.
+
+Hoje, o repositório oferece validação de contrato, domínio e persistência
+próprios, além da API operacional. Instalação, build, inicialização e testes
+usam este repositório, sem checkout ou runtime de outro microsserviço. O fluxo
+completo ainda depende das etapas futuras de consumidor, recuperação do objeto,
+extração e publicação; sua autonomia de negócio ainda precisa ser demonstrada.
+
+Operar isoladamente permite a infraestrutura necessária ao serviço: SQLite
+local está disponível; RabbitMQ e armazenamento de objetos são integrações
+previstas, ainda não implementadas. Compartilhar infraestrutura não permite
+acessar tabelas, modelos ou filesystem privado de outro serviço. Não é
+necessário inventar outra API ou CLI para cumprir essa diretriz.
+
 ## Requisitos
 
 - Python 3.13 ou superior (a versão local indicada em `.python-version` é 3.14.4)
@@ -95,7 +115,8 @@ ser habilitada definindo `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`.
 
 O protocolo experimental inicial e suas dependências estão em
 [`experiments/README.md`](experiments/README.md). Os cenários que dependem de
-worker, persistência, RabbitMQ, storage ou extração ainda não são executáveis.
+worker, RabbitMQ, storage ou extração ainda não são executáveis; a persistência
+própria já possui testes isolados.
 
 ## Estrutura atual
 

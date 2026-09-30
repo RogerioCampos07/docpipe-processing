@@ -27,14 +27,31 @@ conceituais e nomes provisórios não são contratos definitivos.
 ## Responsabilidade e limites do serviço
 
 O Processing é um microserviço independente. Ele consome informações sobre
-documentos aceitos pelo Ingestion, recupera o original pela abstração de
+documentos de qualquer produtor autorizado e compatível com o contrato público
+versionado, recupera o original pela abstração de
 armazenamento definida para o projeto, processa-o, persiste estado e resultado
 próprios e, quando o contrato estiver definido, publica o resultado.
 
-- Mantenha banco, migrations, imagem, testes e CI próprios do Processing.
-- Nunca acesse diretamente o banco, tabelas ou filesystem privado do
-  Ingestion. A integração ocorre por contratos/eventos e armazenamento
-  explicitamente compartilhado.
+- Respeite a diretriz comum de autonomia em `docs/DESIGN.md`, seção 2.1:
+  cada microsserviço deve ter utilidade de negócio sem os demais em execução.
+- Mantenha repositório, domínio, banco, migrations, configuração, imagem,
+  testes e CI próprios do Processing.
+- Não importe código interno, modelos ORM ou classes de domínio de outro
+  serviço; não acesse seu banco, tabelas ou filesystem privado. A integração
+  ocorre exclusivamente por contratos públicos versionados, com representação
+  própria em cada serviço. Referências a objetos devem estar no contrato e
+  ser acessadas por interfaces públicas e adaptadores próprios.
+- Não exija checkout ou execução de outro microsserviço para instalar,
+  construir, iniciar, testar ou implantar o Processing. Infraestrutura própria
+  necessária é permitida; compartilhar uma instância não permite compartilhar
+  estado interno. Não crie API, CLI ou modo de execução só para alegar autonomia.
+- Antes de alterar uma fronteira, verifique os impactos sobre produtores e
+  consumidores, compatibilidade e implantação independente. Não exija mudança
+  coordenada de domínio em outros serviços; preserve a possibilidade de
+  substituí-los por sistemas autorizados e compatíveis com o contrato.
+- Preserve os tipos, formatos e regras dos identificadores vigentes, incluindo
+  `correlation_id` opcional e anulável no contrato de entrada. A especificação
+  está em `docs/contracts/document_received_v1.md`.
 - Trate a chave de armazenamento recebida como opaca; não pressuponha caminhos
   internos do Ingestion.
 - Preserve entrega pelo menos uma vez, tolerância a duplicatas e idempotência.
@@ -56,14 +73,16 @@ sem evidência:
 
 - topologia RabbitMQ, exchange, routing keys, filas ou bindings;
 - política de ACK, retry, DLQ, headers ou reprocessamento;
-- contratos finais dos eventos de entrada, saída ou falha;
+- mudanças no contrato público de entrada vigente e contratos ainda abertos
+  de saída ou falha;
 - motor, idiomas ou política de OCR e extração;
 - formato, retenção ou estratégia definitiva para resultados;
 - detalhes de consumidores futuros.
 
 Antes de depender desses dados, procure evidência na documentação, no código,
-nos testes e nos contratos disponíveis. Quando o DESIGN exigir confronto com
-o `docpipe-ingestion`, não presuma acesso ao outro repositório. Se os artefatos
+nos testes e nos contratos disponíveis. A consulta ao `docpipe-ingestion` serve
+somente como evidência de compatibilidade; não presuma acesso ao repositório
+nem torne essa consulta requisito de build ou execução. Se os artefatos
 não estiverem disponíveis localmente, registre exatamente o que precisa ser
 validado externamente. Não recrie nem altere contratos do Ingestion por
 conveniência.
