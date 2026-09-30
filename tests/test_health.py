@@ -2,10 +2,20 @@ import json
 import logging
 from http import HTTPStatus
 
+import pytest
 from fastapi.testclient import TestClient
 
 from docpipe_processing.app import app
 from docpipe_processing.observability import SERVICE_NAME, JsonFormatter
+
+
+def _structured_event(record: logging.LogRecord) -> dict[str, object]:
+    raw_event: object = record.__dict__.get('structured_event')
+    assert isinstance(raw_event, dict)
+    event: dict[str, object] = {
+        key: value for key, value in raw_event.items() if isinstance(key, str)
+    }
+    return event
 
 
 def test_health_returns_ok() -> None:
@@ -28,7 +38,9 @@ def test_metrics_endpoint_exposes_http_request_metrics() -> None:
     )
 
 
-def test_health_request_emits_structured_operational_log(caplog) -> None:
+def test_health_request_emits_structured_operational_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     caplog.set_level(logging.INFO, logger='docpipe_processing.http')
 
     with TestClient(app) as client:
@@ -40,17 +52,21 @@ def test_health_request_emits_structured_operational_log(caplog) -> None:
         if record.name == 'docpipe_processing.http'
     )
 
-    event = record.structured_event
+    event = _structured_event(record)
     assert event['service'] == SERVICE_NAME
     assert event['operation'] == 'http.request'
     assert event['method'] == 'GET'
     assert event['route'] == '/health'
     assert event['status_code'] == HTTPStatus.OK
     assert event['state'] == 'completed'
-    assert event['duration_seconds'] >= 0
+    duration = event['duration_seconds']
+    assert isinstance(duration, (int, float))
+    assert duration >= 0
 
 
-def test_health_request_extracts_w3c_trace_context(caplog) -> None:
+def test_health_request_extracts_w3c_trace_context(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     trace_id = '0123456789abcdef0123456789abcdef'
     caplog.set_level(logging.INFO, logger='docpipe_processing.http')
 
@@ -67,7 +83,7 @@ def test_health_request_extracts_w3c_trace_context(caplog) -> None:
     )
 
     assert response.status_code == HTTPStatus.OK
-    assert record.structured_event['trace_id'] == trace_id
+    assert _structured_event(record)['trace_id'] == trace_id
 
 
 def test_json_formatter_serializes_operational_fields() -> None:

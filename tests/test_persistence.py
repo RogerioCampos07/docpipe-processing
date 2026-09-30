@@ -109,7 +109,7 @@ def test_initial_migration_creates_jobs_and_version_tables(
             }
         ]
         with engine.connect() as connection:
-            revision = connection.exec_driver_sql(
+            revision: str = connection.exec_driver_sql(
                 'SELECT version_num FROM alembic_version'
             ).scalar_one()
         assert revision == '0001_processing_jobs'
