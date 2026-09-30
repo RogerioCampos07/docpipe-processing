@@ -5,11 +5,13 @@ description = "Document processing microservice for the DocPipe pipeline, respon
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "alembic>=1.20.0",
     "fastapi>=0.141.1",
     "opentelemetry-api>=1.45.0",
     "opentelemetry-exporter-otlp-proto-http>=1.45.0",
     "opentelemetry-sdk>=1.45.0",
     "prometheus-client>=0.26.0",
+    "sqlalchemy>=2.1.1",
     "uvicorn>=0.54.0",
 ]
 
@@ -21,6 +23,7 @@ dev = [
     "ruff>=0.16.2",
     "taskipy>=1.14.1",
     "typos>=1.49.0",
+    "mypy>=2.3.1",
 ]
 
 [tool.ruff]
@@ -48,10 +51,19 @@ markers = [
     'e2e: tests for the implemented end-to-end flow',
 ]
 
+[tool.mypy]
+python_version = '3.14'
+strict = true
+files = ['docpipe_processing', 'tests', 'main.py']
+
 [tool.taskipy.tasks]
 lint = 'ruff check'
 pre_format = 'ruff check --fix'
 format = 'ruff format'
+format-check = 'ruff format --check .'
+typecheck = 'mypy'
 pre_test = 'task lint'
 test = 'pytest --cov=docpipe_processing --cov-report=term-missing --cov-fail-under=80 -vv'
 post_test = 'coverage html'
+typos = 'typos'
+quality = 'task format-check && task typecheck && task test && task typos'

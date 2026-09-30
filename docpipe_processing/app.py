@@ -12,6 +12,7 @@ from prometheus_client import (
     Histogram,
     generate_latest,
 )
+from starlette.middleware.base import RequestResponseEndpoint
 
 from docpipe_processing.observability import SERVICE_NAME, TRACER
 
@@ -33,7 +34,9 @@ HTTP_METHODS = {'DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST', 'PUT'}
 
 
 @app.middleware('http')
-async def observe_http_request(request: Request, call_next):
+async def observe_http_request(
+    request: Request, call_next: RequestResponseEndpoint
+) -> Response:
     started_at = time.perf_counter()
     status_code = 500
     parent_context = propagate.extract(request.headers)
