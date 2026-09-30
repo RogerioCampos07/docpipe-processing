@@ -1,9 +1,8 @@
 # DocPipe Processing
 
-Microserviço de processamento de documentos do DocPipe. Nesta primeira etapa, o
-repositório oferece apenas uma aplicação HTTP mínima para validar a execução
-isolada e o ambiente de desenvolvimento. O processamento de documentos ainda
-não está disponível.
+Microserviço de processamento de documentos do DocPipe. O repositório inclui
+uma aplicação HTTP mínima e persistência própria para o estado dos trabalhos.
+A extração e o processamento dos documentos ainda não estão disponíveis.
 
 ## Requisitos
 
@@ -20,6 +19,26 @@ uv run python main.py
 A aplicação escuta em `127.0.0.1:8000` por padrão. Configure `PROCESSING_HOST` e
 `PROCESSING_PORT` no ambiente para alterar o endereço e a porta, respectivamente.
 Não há serviços externos necessários para esta etapa.
+
+## Persistência local
+
+O banco local inicial é SQLite. Por padrão, o Processing usa
+`sqlite:///./processing.db`; configure `PROCESSING_DATABASE_URL` para indicar
+outra URL de conexão. O arquivo padrão é local e não deve ser compartilhado
+com o Ingestion.
+
+Prepare ou atualize o schema aplicando as migrations versionadas:
+
+```bash
+uv run alembic upgrade head
+```
+
+Os testes de persistência usam bancos SQLite temporários e podem ser executados
+com:
+
+```bash
+uv run pytest -m persistence
+```
 
 Em outro terminal, confira a resposta HTTP:
 
@@ -71,9 +90,12 @@ worker, persistência, RabbitMQ, storage ou extração ainda não são executáv
 
 - `docpipe_processing/app.py`: aplicação HTTP e rota de saúde.
 - `docpipe_processing/observability.py`: logs JSON da aplicação.
+- `docpipe_processing/domain.py`: modelo de domínio imutável do trabalho.
+- `docpipe_processing/persistence.py`: ORM, configuração de banco e repository.
+- `migrations/`: migrations versionadas do banco próprio do Processing.
 - `main.py`: inicializador local.
 - `tests/`: testes automatizados do comportamento implementado.
 - `.github/workflows/ci.yml`: checks de qualidade, testes e smoke do container.
-- `pyproject.toml` e `uv.lock`: dependências e ferramentas de desenvolvimento.
+- `pyproject.toml` e `uv.lock`: dependências runtime e ferramentas de desenvolvimento.
 
 O `docker-compose.yml` permanece sem serviços auxiliares nesta etapa.
