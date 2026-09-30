@@ -51,6 +51,11 @@ markers = [
     'e2e: tests for the implemented end-to-end flow',
 ]
 
+[tool.mypy]
+python_version = '3.14'
+strict = true
+files = ['docpipe_processing', 'tests', 'main.py']
+
 [tool.taskipy.tasks]
 lint = 'ruff check'
 pre_format = 'ruff check --fix'
