@@ -1,4 +1,4 @@
-FROM python:3.14-slim-bookworm
+FROM python:3.14.4-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -11,7 +11,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Instala o uv usando a imagem oficial
-COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.12.20 /uv /uvx /bin/
 
 # Instala dependências em uma camada separada
 COPY pyproject.toml uv.lock ./
@@ -29,5 +29,8 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8000
 
-# Substitua main.py pelo ponto de entrada do projeto
+RUN groupadd --gid 10001 processing \
+    && useradd --uid 10001 --gid processing --create-home processing
+
+USER processing
 CMD ["uv", "run", "--no-sync", "python", "main.py"]

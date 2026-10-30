@@ -24,6 +24,8 @@ jobs:
           cache-dependency-glob: uv.lock
       - run: uv python install 3.14.4
       - run: uv sync --locked
+      - run: uv lock --check
+      - run: uv run task typecheck
       - run: uv run task lint
       - run: uv run ruff format --check
       - run: uv run typos
@@ -32,6 +34,20 @@ jobs:
     name: tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17.11-bookworm
+        env:
+          POSTGRES_DB: processing_test
+          POSTGRES_USER: processing_test
+          POSTGRES_PASSWORD: synthetic-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U processing_test -d processing_test"
+          --health-interval 5s --health-timeout 3s --health-retries 12
+    env:
+      PROCESSING_TEST_DATABASE_URL: postgresql+psycopg://processing_test:synthetic-ci-only@127.0.0.1:5432/processing_test
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -50,10 +66,29 @@ jobs:
     name: container-smoke
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17.11-bookworm
+        env:
+          POSTGRES_DB: processing_test
+          POSTGRES_USER: processing_test
+          POSTGRES_PASSWORD: synthetic-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U processing_test -d processing_test"
+          --health-interval 5s --health-timeout 3s --health-retries 12
     steps:
       - uses: actions/checkout@v4
       - name: Build image
         run: docker build --tag docpipe-processing:ci .
+      - name: Apply migrations from the runtime image
+        run: >-
+          docker run --rm --network host
+          --env PROCESSING_DATABASE_URL=postgresql+psycopg://processing_test:synthetic-ci-only@127.0.0.1:5432/processing_test
+          docpipe-processing:ci uv run --no-sync alembic upgrade head
+      - name: Check unprivileged runtime
+        run: test "$(docker run --rm docpipe-processing:ci id -u)" != 0
       - name: Start container and check health and metrics
         shell: bash
         run: |
