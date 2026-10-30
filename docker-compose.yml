@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: postgres:17.11-bookworm
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${PROCESSING_POSTGRES_PASSWORD:?Set bootstrap password}
+      PROCESSING_DATABASE_NAME: ${PROCESSING_DATABASE_NAME:-processing}
+      PROCESSING_DATABASE_USER: ${PROCESSING_DATABASE_USER:-processing}
+      PROCESSING_DATABASE_PASSWORD: ${PROCESSING_DATABASE_PASSWORD:?Set migration password}
+      PROCESSING_APP_USER: ${PROCESSING_APP_USER:-processing_app}
+      PROCESSING_APP_PASSWORD: ${PROCESSING_APP_PASSWORD:?Set application password}
+    ports:
+      - "127.0.0.1:${PROCESSING_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - processing_postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-processing.sh:/docker-entrypoint-initdb.d/10-processing.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", 'pg_isready -U "$${PROCESSING_DATABASE_USER}" -d "$${PROCESSING_DATABASE_NAME}"']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    cpus: "1.0"
+    mem_limit: 512m
+
+  migrate:
+    build: .
+    image: docpipe-processing:local
+    profiles: [tools]
+    environment:
+      PROCESSING_DATABASE_URL: ${PROCESSING_CONTAINER_MIGRATION_URL:?Set container migration URL}
+    command: ["uv", "run", "--no-sync", "alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    cpus: "0.5"
+    mem_limit: 256m
+
+  api:
+    build: .
+    image: docpipe-processing:local
+    profiles: [app]
+    environment:
+      PROCESSING_DATABASE_URL: ${PROCESSING_CONTAINER_DATABASE_URL:?Set container application URL}
+    ports:
+      - "127.0.0.1:${PROCESSING_HTTP_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    cpus: "0.5"
+    mem_limit: 256m
+
+volumes:
+  processing_postgres_data:
