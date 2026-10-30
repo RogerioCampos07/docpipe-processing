@@ -1,133 +1,196 @@
 # DocPipe Processing
 
-Microserviço de processamento de documentos do DocPipe. O repositório inclui
-uma aplicação HTTP mínima e persistência própria para o estado dos trabalhos.
-A extração e o processamento dos documentos ainda não estão disponíveis.
+Microserviço independente de processamento documental do DocPipe. Implementa
+contrato público de entrada, `ProcessingJob`, persistência PostgreSQL e entrada
+durável. A API atual expõe somente `/health` e `/metrics`.
 
-## Autonomia do serviço
+**IMPLEMENTADO:** domínio, contrato `document.received.v1`, repository síncrono,
+entrada durável na própria `processing_jobs`, migrations e observabilidade HTTP.
+**PLANEJADO:** API HTTP de domínio, RabbitMQ, recuperação do original, pipeline,
+`ProcessingResult` e publicação. Nenhum worker ou ACK existe nesta entrega.
+O [DESIGN](docs/DESIGN.md) e o [PLAN](docs/PLAN.md) permanecem preservados; suas
+seções de estado observado registram a revisão documental anterior a este bloco.
 
-A responsabilidade de negócio prevista é transformar documentos referenciados
-por eventos compatíveis em resultado e estado próprios, com utilidade para
-qualquer produtor autorizado que cumpra o contrato. Isso deve funcionar sem
-Ingestion ou consumidores posteriores em execução. A diretriz obrigatória,
-os limites e as lacunas atuais estão no [DESIGN](docs/DESIGN.md), seção 2.
+## Requisitos e stack
 
-Hoje, o repositório oferece validação de contrato, domínio e persistência
-próprios, além da API operacional. Instalação, build, inicialização e testes
-usam este repositório, sem checkout ou runtime de outro microsserviço. O fluxo
-completo ainda depende das etapas futuras de consumidor, recuperação do objeto,
-extração e publicação; sua autonomia de negócio ainda precisa ser demonstrada.
+- Python **3.14.4**; o projeto aceita somente a linha minor 3.14.
+- `uv`; Docker e CI usam **0.12.20**.
+- Docker com Compose para a infraestrutura local.
+- PostgreSQL **`postgres:17.11-bookworm`**, SQLAlchemy síncrono, Alembic e
+  Psycopg 3 com extra `binary`, resolvido no lockfile próprio.
 
-Operar isoladamente permite a infraestrutura necessária ao serviço: SQLite
-local está disponível; RabbitMQ e armazenamento de objetos são integrações
-previstas, ainda não implementadas. Compartilhar infraestrutura não permite
-acessar tabelas, modelos ou filesystem privado de outro serviço. Não é
-necessário inventar outra API ou CLI para cumprir essa diretriz.
+As bibliotecas compartilhadas existentes foram preservadas. O Ingestion não
+está disponível neste ambiente; sua baseline ainda exige conferência externa.
+Instalação, build, testes e execução não dependem de outro microsserviço.
 
-## Requisitos
+## Configuração e PostgreSQL local
 
-- Python 3.13 ou superior (a versão local indicada em `.python-version` é 3.14.4)
-- `uv`
+```bash
+cp .env.example .env
+```
 
-## Execução local
+Edite `.env` com credenciais locais próprias. Não versione esse arquivo.
+Configure as três senhas (bootstrap, migrations e aplicação) e substitua os
+placeholders nas URLs. Símbolos especiais das senhas devem ser codificados
+nas URLs. `.env` é lido pelo Compose; comandos `uv` usam `--env-file .env`.
+
+| Variável | Uso |
+| --- | --- |
+| `PROCESSING_DATABASE_URL` | API no host, usuário de aplicação, `127.0.0.1` e porta publicada. |
+| `PROCESSING_MIGRATION_DATABASE_URL` | Referência para migrations no host, com usuário proprietário. |
+| `PROCESSING_CONTAINER_DATABASE_URL` | API em container, usuário de aplicação, host `postgres:5432`. |
+| `PROCESSING_CONTAINER_MIGRATION_URL` | Migrations em container, usuário proprietário, host `postgres:5432`. |
+| `PROCESSING_TEST_DATABASE_URL` | Banco separado cujo nome termina em `_test`; nunca o banco operacional. |
+
+`PROCESSING_DATABASE_URL` é obrigatória ao configurar persistência/migrations.
+URL ausente, vazia, inválida ou diferente de `postgresql+psycopg` falha
+explicitamente. Não há default com senha nem fallback SQLite. O Engine conecta
+sob demanda; falhas operacionais do repository produzem
+`PersistenceUnavailableError`, sem imprimir a URL. O processo que cria o Engine
+é responsável por encerrá-lo com `dispose()`.
+
+Inicie somente o banco e aplique as migrations em processo separado:
+
+```bash
+docker compose config --quiet
+docker compose up -d --wait postgres
+docker compose build migrate
+docker compose run --rm migrate
+```
+
+O banco lógico e os usuários pertencem ao Processing. O script de inicialização
+cria um proprietário sem privilégios globais e um usuário de aplicação com
+permissões de dados, sem DDL. O superusuário serve apenas ao bootstrap.
+O volume nomeado preserva os dados; o script roda somente em volume novo.
+Alterar variáveis não modifica senhas ou permissões de um volume existente.
+Não remova volumes para corrigir configuração sem avaliar os dados.
+
+PostgreSQL é publicado somente em loopback, na porta configurável
+`PROCESSING_POSTGRES_PORT` (5432 por padrão). Há healthcheck, limite de 1 CPU e
+512 MiB. Esses limites locais não constituem metas de desempenho.
+
+Para executar migrations no host, forneça a URL do proprietário explicitamente:
+
+```bash
+PROCESSING_DATABASE_URL='postgresql+psycopg://processing:<encoded-migration-password>@127.0.0.1:5432/processing' uv run alembic upgrade head
+```
+
+Alembic controla o schema. Não há `create_all`, migrations automáticas no startup
+ou dependência do Compose do Ingestion.
+
+## Execução da API
 
 ```bash
 uv sync --locked
-uv run python main.py
+uv run --env-file .env python main.py
 ```
 
-A aplicação escuta em `127.0.0.1:8000` por padrão. Configure `PROCESSING_HOST` e
-`PROCESSING_PORT` no ambiente para alterar o endereço e a porta, respectivamente.
-Não há serviços externos necessários para esta etapa.
-
-## Contrato de entrada
-
-O Processing valida o contrato público versionado `document.received.v1` sem
-depender do runtime ou do código de qualquer produtor. A especificação está em
-[`docs/contracts/document_received_v1.md`](docs/contracts/document_received_v1.md).
-Execute os testes sintéticos do contrato com:
+A API escuta em `127.0.0.1:8000`; `PROCESSING_HOST` e `PROCESSING_PORT` permitem
+alterar esse endereço. Alternativamente, após aplicar migrations:
 
 ```bash
-uv run pytest -m contract
+docker compose --profile app up -d --build api
+curl --fail http://127.0.0.1:8000/health
+curl --fail http://127.0.0.1:8000/metrics
 ```
 
-## Persistência local
+A imagem usa usuário não privilegiado e Python/uv fixados. `/health` retorna
+`{"status":"ok"}` e indica somente que a API responde; não verifica o banco.
+A API operacional pode responder sem PostgreSQL. Consultas de domínio ainda não
+existem. Os logs são JSON, as métricas têm baixa cardinalidade e o tracing extrai
+W3C Trace Context. Exportação OTLP é opcional por
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`; não há stack centralizada neste serviço.
 
-O banco local inicial é SQLite. Por padrão, o Processing usa
-`sqlite:///./processing.db`; configure `PROCESSING_DATABASE_URL` para indicar
-outra URL de conexão. O arquivo padrão é local e não deve ser compartilhado
-com o Ingestion.
+## Entrada durável e compatibilidade
 
-Prepare ou atualize o schema aplicando as migrations versionadas:
+`ProcessingInput` reutiliza a validação do contrato e é imutável. O domínio
+`ProcessingJob` permanece independente de Pydantic, SQLAlchemy e transporte.
+
+`ProcessingJobRepository.create(job, input=entrada)` exige os quatro metadados
+validados: `storage_key`, `media_type`, `size_bytes` e `sha256`. Job e entrada
+ocupam a mesma linha e são confirmados em uma transação. A criação não retorna
+sucesso antes do commit. `save(job)` preserva os metadados aceitos.
+As consultas `get_input_by_processing_id` e `get_input_by_source_event_id`
+recuperam a entrada sem RabbitMQ ou produtor. Os identificadores externos
+continuam strings opacas, e `correlation_id` continua opcional/anulável.
+
+`0001_processing_jobs` foi preservada; `0002_processing_input` adiciona campos
+anuláveis para manter registros legados. Um CHECK permite somente os quatro
+campos preenchidos ou os quatro ausentes. O repository nunca cria uma nova
+aceitação sem entrada. Escritas SQL fora dessa interface ainda podem inserir
+linhas sem metadados; não representam aceitação durável. Consultar a entrada de
+um job legado retorna `None`; esse job não pode ser reconhecido como recuperável.
+Um futuro `NOT NULL` exige regularização aprovada dos dados, sem valores fictícios.
+
+`size_bytes` usa NUMERIC integral, não BIGINT, preservando valores superiores a
+64 bits. Checks rejeitam negativos, frações, NaN e infinitos; SHA-256 é lowercase.
+MIME e chave opaca são preservados conforme o contrato.
+
+A deduplicação usa exclusivamente a UNIQUE de `source_event_id`. Somente
+SQLSTATE 23505 com a constraint correspondente vira `DuplicateSourceEventError`.
+Colisão de PK e outras violações são distintas. Duplicatas, inclusive conflitantes,
+sempre geram erro: não são automaticamente consideradas aceitas/equivalentes.
+A Etapa 6 deverá comparar identidade, correlação e os metadados persistidos e
+fechar a política do envelope: `occurred_at` não é persistido nesta entrega.
+Resultado de commit incerto por perda de conexão também exige reconciliação por
+`source_event_id`, nunca ACK antecipado. Não há promessa de exatamente uma vez.
+
+Os limites físicos do PostgreSQL continuam relevantes: TEXT não aceita U+0000,
+e IDs muito longos podem exceder o limite do índice B-tree. O contrato público
+não foi restringido; esses casos precisam de avaliação antes de declarar suporte
+operacional irrestrito. Nenhum truncamento ou alteração silenciosa é aplicado.
+
+## SQLite e dados legados
+
+SQLite saiu do fluxo operacional. Arquivos locais existentes não devem ser
+apagados nem sobrescritos. A estratégia é PostgreSQL novo, sem transferência
+automática. Alembic migra schema, não copia dados entre bancos.
+Jobs antigos não contêm os metadados necessários à recuperação: sua transferência
+ou regularização exige inventário, backup e decisão própria. Downgrade da revisão
+0002 remove os metadados; execute somente em banco descartável ou com aprovação
+específica e backup. Nenhuma migration deve ser aplicada em produção por estes
+comandos de desenvolvimento.
+
+## Testes e validações
+
+Testes de domínio, contrato e HTTP não exigem PostgreSQL:
 
 ```bash
-uv run alembic upgrade head
+uv run pytest -m 'not persistence'
 ```
 
-Os testes de persistência usam bancos SQLite temporários e podem ser executados
-com:
+Para persistência, provisione um banco exclusivo com nome terminado em `_test`
+e um proprietário com permissão de criar schemas. A suíte exige configuração
+explícita e falha se ela estiver ausente. As fixtures criam schemas aleatórios,
+aplicam migrations e removem somente os schemas criados por elas. Não há cleanup
+do banco operacional nem transação externa mascarando commits do repository.
 
 ```bash
-uv run pytest -m persistence
+PROCESSING_TEST_DATABASE_URL='postgresql+psycopg://<test-user>:<encoded-test-password>@127.0.0.1:5432/processing_test' uv run pytest -m persistence
 ```
 
-Em outro terminal, confira a resposta HTTP:
+Configure essa variável no ambiente para executar a suíte completa:
 
 ```bash
-curl --fail-with-body http://127.0.0.1:8000/health
-```
-
-Resposta esperada: `{"status":"ok"}`. A rota indica apenas que a aplicação está
-respondendo; ela não verifica dependências futuras.
-
-## Verificações
-
-```bash
+uv lock --check
 uv sync --locked
 uv run task lint
 uv run ruff format --check
+uv run task typecheck
 uv run pytest
 uv run task test
 uv run typos
+git diff --check
+docker compose config --quiet
 docker build -t docpipe-processing:local .
 ```
 
-`uv run task test` aplica o limite inicial de 80% de cobertura para
-`docpipe_processing` e gera um relatório HTML em `htmlcov/`. A CI executa lint,
-formatação, typos, testes com cobertura e o smoke test do container em Pull
-Requests.
+`task test` exige cobertura mínima de 80% e gera HTML em `htmlcov/`. A CI preserva
+`quality`, `tests` e `container-smoke`: MyPy no primeiro, PostgreSQL real no segundo,
+e migrations da imagem, execução não privilegiada e saúde/métricas no terceiro.
+As credenciais da CI são sintéticas e seus bancos são descartáveis.
 
-Para validar a imagem localmente, inicie-a e consulte a saúde e as métricas:
-
-```bash
-docker run --rm -d --name docpipe-processing-smoke -p 127.0.0.1:18000:8000 docpipe-processing:local
-curl --fail http://127.0.0.1:18000/health
-curl --fail http://127.0.0.1:18000/metrics
-docker stop docpipe-processing-smoke
-```
-
-O container escuta em `0.0.0.0:8000`; a execução local continua usando
-`127.0.0.1:8000` por padrão. `/health` verifica apenas que a API responde.
-`/metrics` expõe métricas HTTP e do processo com rótulos de baixa cardinalidade.
-Os logs da API são JSON e não incluem corpos de requisição. A API extrai o
-contexto W3C `traceparent`; a exportação OTLP fica desativada por padrão e pode
-ser habilitada definindo `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`.
-
-O protocolo experimental inicial e suas dependências estão em
-[`experiments/README.md`](experiments/README.md). Os cenários que dependem de
-worker, RabbitMQ, storage ou extração ainda não são executáveis; a persistência
-própria já possui testes isolados.
-
-## Estrutura atual
-
-- `docpipe_processing/app.py`: aplicação HTTP e rota de saúde.
-- `docpipe_processing/observability.py`: logs JSON da aplicação.
-- `docpipe_processing/domain.py`: modelo de domínio imutável do trabalho.
-- `docpipe_processing/persistence.py`: ORM, configuração de banco e repository.
-- `migrations/`: migrations versionadas do banco próprio do Processing.
-- `main.py`: inicializador local.
-- `tests/`: testes automatizados do comportamento implementado.
-- `.github/workflows/ci.yml`: checks de qualidade, testes e smoke do container.
-- `pyproject.toml` e `uv.lock`: dependências runtime e ferramentas de desenvolvimento.
-
-O `docker-compose.yml` permanece sem serviços auxiliares nesta etapa.
+O [contrato público](docs/contracts/document_received_v1.md) usa fixtures próprias.
+O [protocolo experimental](experiments/README.md) permanece futuro para os cenários
+que exigem worker, armazenamento e extração. Não há dependência de Ingestion,
+Triage ou Registry para as capacidades implementadas.
