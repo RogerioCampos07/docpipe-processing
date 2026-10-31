@@ -2,11 +2,12 @@
 
 Microserviço independente de processamento documental do DocPipe. Implementa
 contrato público de entrada, `ProcessingJob`, persistência PostgreSQL e entrada
-durável. A API atual expõe somente `/health` e `/metrics`.
+durável. A API permite consultar `ProcessingJob`, além de `/health` e `/metrics`.
 
 **IMPLEMENTADO:** domínio, contrato `document.received.v1`, repository síncrono,
-entrada durável na própria `processing_jobs`, migrations e observabilidade HTTP.
-**PLANEJADO:** API HTTP de domínio, RabbitMQ, recuperação do original, pipeline,
+entrada durável na própria `processing_jobs`, migrations, consulta HTTP de domínio
+e observabilidade HTTP.
+**PLANEJADO:** RabbitMQ, recuperação do original, pipeline,
 `ProcessingResult` e publicação. Nenhum worker ou ACK existe nesta entrega.
 O [DESIGN](docs/DESIGN.md) e o [PLAN](docs/PLAN.md) permanecem preservados; suas
 seções de estado observado registram a revisão documental anterior a este bloco.
@@ -96,10 +97,69 @@ curl --fail http://127.0.0.1:8000/metrics
 
 A imagem usa usuário não privilegiado e Python/uv fixados. `/health` retorna
 `{"status":"ok"}` e indica somente que a API responde; não verifica o banco.
-A API operacional pode responder sem PostgreSQL. Consultas de domínio ainda não
-existem. Os logs são JSON, as métricas têm baixa cardinalidade e o tracing extrai
+A API inicializa sem configuração PostgreSQL e sem conexão imediata ao banco.
+`/health` e `/metrics` continuam disponíveis se o banco estiver indisponível;
+nesse caso, somente a consulta de domínio retorna 503. A API cria um Engine e
+uma Session Factory por processo, usa sessões por operação e encerra o pool no
+shutdown. Não executa migrations no startup nem utiliza fallback SQLite.
+Os logs são JSON, as métricas têm baixa cardinalidade e o tracing extrai
 W3C Trace Context. Exportação OTLP é opcional por
 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`; não há stack centralizada neste serviço.
+
+## Consulta HTTP de ProcessingJob
+
+```http
+GET /v1/processing-jobs/{processing_id}
+```
+
+Consulta o estado atual persistido no PostgreSQL próprio, sem RabbitMQ, worker,
+storage externo ou outros microsserviços. Aceita UUID válido de qualquer versão.
+O GET não cria jobs, inicia processamento, altera estado ou incrementa tentativas.
+Não há criação HTTP, listagem nem consulta HTTP por identificador de evento.
+
+Com o banco preparado e a API iniciada pelos comandos acima, consulte um UUID
+de job já persistido (o exemplo não cria dados):
+
+```bash
+curl --include http://127.0.0.1:8000/v1/processing-jobs/12345678-1234-5678-1234-567812345678
+```
+
+O JSON de sucesso contém exclusivamente:
+
+| Campos | Representação |
+| --- | --- |
+| `processing_id` | UUID serializado como string. |
+| `source_event_id`, `document_id` | Strings opacas preservadas. |
+| `correlation_id` | String ou null; sempre presente. |
+| `status` | RECEIVED, PROCESSING, COMPLETED ou FAILED. |
+| `attempts` | Inteiro não negativo. |
+| `created_at`, `updated_at` | RFC 3339 em UTC. |
+| `started_at`, `finished_at` | RFC 3339 em UTC ou null. |
+| `failure_reason` | `"O processamento falhou."` para FAILED; null nos demais. |
+
+O motivo original de falha permanece intacto no banco e nunca é projetado no
+JSON público. A resposta não expõe metadados de armazenamento, checksum, payload
+original, conteúdo documental, texto extraído ou informações internas do banco.
+Jobs legados sem entrada durável continuam consultáveis quando válidos: HTTP 200
+não garante recuperabilidade do documento. As respostas usam `Cache-Control:
+no-store`.
+
+| HTTP | Significado | Código no JSON de erro |
+| --- | --- | --- |
+| 200 | Job encontrado. | — |
+| 404 | UUID válido, job inexistente. | `processing_job_not_found` |
+| 422 | UUID inválido. | `invalid_processing_id` |
+| 503 | Banco indisponível ou configuração ausente/inválida. | `persistence_unavailable` |
+| 500 | Falha interna, schema incompatível ou dados inconsistentes. | `internal_error` |
+
+Os erros contêm somente `code` e `message`, com mensagens genéricas. Não incluem
+SQL, credenciais, stack trace nem valores inválidos recebidos. OpenAPI está em
+`/openapi.json` e a documentação interativa em `/docs`.
+
+Esta entrega não implementa autenticação ou autorização HTTP. Utilize somente
+em ambiente local/controlado, com acesso em loopback e dados sintéticos. A API
+não está pronta para exposição pública; acesso externo exige aprovação de
+autenticação, autorização e regras de acesso. Não há CORS permissivo.
 
 ## Entrada durável e compatibilidade
 
@@ -153,7 +213,7 @@ comandos de desenvolvimento.
 
 ## Testes e validações
 
-Testes de domínio, contrato e HTTP não exigem PostgreSQL:
+Testes de domínio, contrato e HTTP com fakes não exigem PostgreSQL:
 
 ```bash
 uv run pytest -m 'not persistence'
@@ -187,7 +247,8 @@ docker build -t docpipe-processing:local .
 
 `task test` exige cobertura mínima de 80% e gera HTML em `htmlcov/`. A CI preserva
 `quality`, `tests` e `container-smoke`: MyPy no primeiro, PostgreSQL real no segundo,
-e migrations da imagem, execução não privilegiada e saúde/métricas no terceiro.
+e migrations da imagem, execução não privilegiada, saúde/métricas e consulta de
+job sintético persistido no terceiro.
 As credenciais da CI são sintéticas e seus bancos são descartáveis.
 
 O [contrato público](docs/contracts/document_received_v1.md) usa fixtures próprias.

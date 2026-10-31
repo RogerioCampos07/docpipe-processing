@@ -1,6 +1,7 @@
 # Test organization
 
-Domain, public contract, configuration and HTTP tests require no external service:
+Domain, public contract, configuration and HTTP tests using fakes require no
+external service:
 
 ```bash
 uv run pytest -m 'not persistence'
@@ -25,3 +26,28 @@ an isolated PostgreSQL service and enforces 80% coverage. Tests use synthetic
 Processing-owned data and never import another service or require its runtime.
 No RabbitMQ consumer, storage retrieval or document pipeline is implemented.
 Future integration tests will extend the suite alongside those capabilities.
+
+`test_application.py` covers the transport-independent query with a minimal
+reader fake. `test_api.py` checks the HTTP projection, safe failure messages,
+UUID validation, errors, OpenAPI, lifecycle and operational observability.
+`test_api_persistence.py` joins the actual API composition and repository with
+isolated PostgreSQL schemas. It verifies committed snapshots, all states, legacy
+rows, unchanged input and safe errors for inconsistent data/schema.
+
+Run the domain HTTP and OpenAPI tests without a database:
+
+```bash
+uv run pytest tests/test_application.py tests/test_api.py
+```
+
+With the dedicated PostgreSQL test configuration above:
+
+```bash
+uv run pytest tests/test_api_persistence.py
+```
+
+The existing `container-smoke` CI job migrates its disposable PostgreSQL database
+from the runtime image, creates a synthetic job and durable input through the
+domain/repository, then queries it over HTTP. It checks the exact public fields
+and retains health, metrics and unprivileged-runtime checks. No HTTP seed
+endpoint, broker or other microservice is involved.
