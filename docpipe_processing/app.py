@@ -1,6 +1,8 @@
 import logging
 import time
+from contextlib import asynccontextmanager
 from http import HTTPStatus
+from typing import AsyncIterator
 
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
@@ -14,9 +16,39 @@ from prometheus_client import (
 )
 from starlette.middleware.base import RequestResponseEndpoint
 
+from docpipe_processing.api import router
 from docpipe_processing.observability import SERVICE_NAME, TRACER
+from docpipe_processing.persistence import (
+    PersistenceConfigurationError,
+    ProcessingJobRepository,
+    create_database_engine,
+    create_session_factory,
+)
 
-app = FastAPI(title='DocPipe Processing')
+
+@asynccontextmanager
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    engine = None
+    application.state.job_reader = None
+    try:
+        try:
+            engine = create_database_engine()
+        except PersistenceConfigurationError:
+            # Liveness and metrics remain available without configuration.
+            pass
+        if engine is not None:
+            application.state.job_reader = ProcessingJobRepository(
+                create_session_factory(engine)
+            )
+        yield
+    finally:
+        application.state.job_reader = None
+        if engine is not None:
+            engine.dispose()
+
+
+app = FastAPI(title='DocPipe Processing', lifespan=lifespan)
+app.include_router(router)
 logger = logging.getLogger('docpipe_processing.http')
 
 HTTP_REQUESTS = Counter(
