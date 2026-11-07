@@ -899,3 +899,20 @@ def test_missing_schema_is_not_misclassified_as_integrity_or_duplicate(
         assert type(error.value) is PersistenceError
     finally:
         engine.dispose()
+
+
+def test_acceptance_snapshot_reads_job_and_input_together(
+    repository: ProcessingJobRepository,
+) -> None:
+    job = received_job()
+    input = durable_input()
+    repository.create(job, input=input)
+
+    snapshot = repository.get_acceptance_by_source_event_id(
+        job.source_event_id
+    )
+
+    assert snapshot == (job, input)
+    assert (
+        repository.get_acceptance_by_source_event_id('missing-event') is None
+    )
