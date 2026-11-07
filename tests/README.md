@@ -22,10 +22,53 @@ uv run task test
 ```
 
 The complete suite requires the same test database configuration. CI provides
-an isolated PostgreSQL service and enforces 80% coverage. Tests use synthetic
-Processing-owned data and never import another service or require its runtime.
-No RabbitMQ consumer, storage retrieval or document pipeline is implemented.
-Future integration tests will extend the suite alongside those capabilities.
+isolated PostgreSQL and RabbitMQ 4.3.6 services and enforces 80% coverage. Tests
+use synthetic Processing-owned data and never import another service or require
+its runtime. RabbitMQ integration tests also require `PROCESSING_AMQP_URL` for a
+disposable vhost; the broker-restart proof uses
+`PROCESSING_RABBITMQ_CONTAINER_ID` to restart only that disposable container.
+Never point these tests at a shared or operational broker.
+
+The destructive PostgreSQL recovery tests are separate from normal CI and
+require `PROCESSING_POSTGRES_CONTAINER_ID` for a disposable container named
+`docpipe-et6-pg-*`, running `postgres:17.11-bookworm`. They stop and restart
+that exact container. Do not launch it with Docker's `--rm` option: the tests
+need to start the same container after stopping it. Use a fixed loopback port
+(for example, `127.0.0.1:55432:5432`) and configure
+`PROCESSING_TEST_DATABASE_URL` with that port. The test checks that the
+container's mapped port remains stable across restart. The database supplied through
+`PROCESSING_TEST_DATABASE_URL` must end in `_test`; each test uses its own
+migrated schema. The tests verify startup while PostgreSQL is down, a prolonged
+outage across a worker restart, and interruption after a test-local PostgreSQL
+trigger observes an active job insert. They confirm the event remains in the
+Processing queue, does not reach the DLQ, and is accepted once after database
+recovery. The trigger exists only in the fixture's random schema.
+
+Run these checks only against explicitly disposable PostgreSQL and RabbitMQ
+containers. Start a local test stack and export its **container IDs**, not IDs
+from `docker ps` chosen by image alone. The PostgreSQL container must be named
+`docpipe-et6-pg-*`, use the pinned image, and be created without `--rm`:
+
+```bash
+PROCESSING_TEST_DATABASE_URL='postgresql+psycopg://<test-user>:<encoded-password>@127.0.0.1:55432/processing_test' \
+PROCESSING_AMQP_URL='amqp://<test-user>:<encoded-password>@127.0.0.1:<amqp-port>/processing_test' \
+PROCESSING_POSTGRES_CONTAINER_ID='<docpipe-et6-pg-container-id>' \
+PROCESSING_RABBITMQ_CONTAINER_ID='<disposable-rabbitmq-container-id>' \
+uv run pytest -m resilience
+```
+
+`test_rabbitmq_recovery.py` restarts the named broker and rereads the host port
+published by Docker after restart. RabbitMQ 4.3.6 can take over 60 seconds to
+recover quorum queues, so the restart proof allows up to 120 seconds for broker
+readiness. These tests run manually because they stop service containers; the
+regular `tests` CI job uses disposable services but does not interrupt
+PostgreSQL.
+
+All RabbitMQ recovery observations use one node. A quorum queue on a single
+node is not highly available; evidence covers only persistent messages and
+recovery scenarios actually exercised with the container and its data intact.
+Loss of the container's data volume, permanent node loss, cluster behavior,
+and recovery after administrative deletion are not covered.
 
 `test_application.py` covers the transport-independent query with a minimal
 reader fake. `test_api.py` checks the HTTP projection, safe failure messages,
@@ -46,8 +89,25 @@ With the dedicated PostgreSQL test configuration above:
 uv run pytest tests/test_api_persistence.py
 ```
 
-The existing `container-smoke` CI job migrates its disposable PostgreSQL database
-from the runtime image, creates a synthetic job and durable input through the
-domain/repository, then queries it over HTTP. It checks the exact public fields
-and retains health, metrics and unprivileged-runtime checks. No HTTP seed
-endpoint, broker or other microservice is involved.
+Run the PostgreSQL/RabbitMQ acceptance integration and broker recovery proofs
+with both test-only services configured:
+
+```bash
+PROCESSING_TEST_DATABASE_URL='postgresql+psycopg://<test-user>:<encoded-password>@127.0.0.1:5432/processing_test' \
+PROCESSING_AMQP_URL='amqp://<test-user>:<encoded-password>@127.0.0.1:5672/processing_test' \
+PROCESSING_RABBITMQ_CONTAINER_ID='<disposable-container-id>' \
+uv run pytest tests/test_consumer_integration.py tests/test_rabbitmq_recovery.py
+```
+
+`test_consumer_integration.py` checks durable acceptance, equivalent redelivery,
+conflict quarantine and recovery when the Processing-owned DLQ is missing before
+rejection. `test_rabbitmq_recovery.py` checks 26 requeues with delivery-limit
+disabled, retention while the DLQ is full, and persistent source/DLQ messages
+after broker restart. These are single-node container experiments; they do not
+prove cluster availability or protect against administrative deletion races.
+
+The `container-smoke` CI job migrates a disposable PostgreSQL database, starts
+API and worker as separate containers, publishes a synthetic event to RabbitMQ,
+and queries the accepted job over HTTP. It checks the public response, worker
+and API metrics, liveness and unprivileged runtime. No HTTP seed endpoint or
+other microservice is involved.

@@ -6,7 +6,7 @@ O **Processing** é o microserviço responsável pelo processamento dos document
 
 Ele deverá operar sem exigir outros microsserviços em execução, recebendo entradas de qualquer produtor autorizado e compatível por contratos públicos versionados e processamento assíncrono.
 
-O serviço deve ser desenvolvido, instalado, construído, iniciado, testado e implantado sem checkout ou runtime de outros microsserviços. A diretriz de autonomia e as evidências anteriores estão nas seções 2.1 e 2.2 do [DESIGN](DESIGN.md). As decisões recentes aprovadas estão incorporadas neste plano; as divergências com os demais documentos deverão ser avaliadas em revisão posterior. Esta atualização é exclusivamente documental, preserva as entregas anteriores e não declara adequações técnicas concluídas.
+O serviço deve ser desenvolvido, instalado, construído, iniciado, testado e implantado sem checkout ou runtime de outros microsserviços. A diretriz de autonomia e as evidências estão nas seções 2.1 e 2.2 do [DESIGN](DESIGN.md). O alinhamento PostgreSQL, a API HTTP e a aceitação durável da Etapa 6 estão implementados; recuperação documental e as etapas seguintes permanecem futuras.
 
 ---
 
@@ -123,7 +123,7 @@ O serviço deverá seguir:
 
 ### Estado atual e leitura do plano
 
-- **IMPLEMENTADO:** comprovado no código atual, sem significar nova execução das validações nesta revisão documental.
+- **IMPLEMENTADO:** comprovado no código atual; o relatório de cada entrega informa quais validações foram executadas.
 - **PLANEJADO:** previsto para implementação futura, ainda não entregue tecnicamente.
 - **DECIDIDO:** requisito arquitetural aprovado, que pode continuar aguardando implementação.
 - **PENDENTE:** decisão ou avaliação ainda necessária antes de fixar a solução correspondente.
@@ -132,26 +132,28 @@ As entregas das Etapas 1 a 5 estão preservadas e não serão reabertas. Suas se
 
 | Entrega | Estado observado |
 | --- | --- |
-| Etapas 1 e 2 | **IMPLEMENTADO:** bootstrap, API operacional com `/health` e `/metrics`, observabilidade HTTP, testes, cobertura mínima configurada em 80% e CI com `quality`, `tests` e `container-smoke`. MyPy possui configuração e task, mas ainda não é executado pelo workflow. |
+| Etapas 1 e 2 | **IMPLEMENTADO:** bootstrap, API operacional, observabilidade, testes, cobertura mínima configurada em 80% e CI com `quality`, `tests` e `container-smoke`. MyPy é executado no workflow `quality`. |
 | Etapa 3 | **IMPLEMENTADO:** `ProcessingJob` imutável, UUID próprio, estados e invariantes com testes unitários. |
-| Etapa 4 | **IMPLEMENTADO:** SQLAlchemy ORM, repository, sessões, migration Alembic `0001_processing_jobs`, SQLite padrão e testes de persistência. A unicidade no banco não comprova ainda idempotência de um consumidor. |
+| Etapa 4 | **IMPLEMENTADO:** SQLAlchemy ORM, repository, sessões, PostgreSQL, migrations Alembic e testes de persistência. |
 | Etapa 5 | **IMPLEMENTADO:** contrato `document.received.v1`, representação própria, especificação, fixture e testes sintéticos sem broker. |
-| Blocos intermediários e Etapas 6 a 10 | **PLANEJADO:** alinhamento técnico, consulta HTTP de domínio, consumidor, recuperação do objeto, pipeline, resultado, publicação e experimentos do fluxo completo. |
+| Alinhamento técnico pré-Etapa 6 | **IMPLEMENTADO:** Python 3.14.4, PostgreSQL 17.11, Psycopg 3, Compose e CI ajustados. |
+| API HTTP de domínio | **IMPLEMENTADO:** GET versionado por `processing_id`, com DTO seguro, OpenAPI e erros documentados. |
+| Etapa 6 | **IMPLEMENTADO:** consumer `aio-pika`, aceitação durável, idempotência, ACK manual, quarentena e worker separado. Compatibilidade real com o produtor permanece pendente de confirmação externa. |
+| Etapas 7 a 10 | **PLANEJADO:** recuperação do objeto, pipeline, resultado, publicação e experimentos do fluxo completo. |
 
 A autonomia do fluxo completo de negócio ainda deverá ser demonstrada nas etapas correspondentes. A preparação experimental existente não significa que os cenários dependentes de worker, broker, storage ou extração já sejam executáveis.
 
-### Ordem de execução futura aprovada
+### Ordem de execução aprovada
 
-1. Realinhamento documental deste `PLAN.md`, sem implementação técnica.
-2. Alinhamento técnico pré-Etapa 6 — Stack e PostgreSQL.
-3. API HTTP de domínio do Processing.
-4. Etapa 6 — Integração com RabbitMQ.
-5. Etapa 7 — Recuperação do documento.
-6. Etapa 8 — Pipeline de processamento e `ProcessingResult`.
-7. Etapa 9 — Evento de saída e fluxo ponta a ponta.
-8. Etapa 10 — Carga e resiliência.
+1. Alinhamento técnico pré-Etapa 6 — Stack e PostgreSQL (**concluído**).
+2. API HTTP de domínio do Processing (**concluída**).
+3. Etapa 6 — Integração com RabbitMQ (**implementada; validação registrada no relatório**).
+4. Etapa 7 — Recuperação do documento (**futura**).
+5. Etapa 8 — Pipeline de processamento e `ProcessingResult` (**futura**).
+6. Etapa 9 — Evento de saída e fluxo ponta a ponta (**futura**).
+7. Etapa 10 — Carga e resiliência (**futura**).
 
-Os dois blocos intermediários serão executados após as entregas da Etapa 5 e antes da Etapa 6, sem renumerar as Etapas 1 a 10. Cada implementação futura depende de autorização explícita.
+Os dois blocos intermediários foram concluídos antes da Etapa 6, sem renumerar as Etapas 1 a 10.
 
 ## Etapa 1 — Bootstrap do Processing
 
@@ -331,11 +333,11 @@ O contrato deverá possuir testes próprios com payloads e fixtures sintéticos 
 
 ---
 
-## Alinhamento técnico pré-Etapa 6 — Stack e PostgreSQL
+## Alinhamento técnico pré-Etapa 6 — Stack e PostgreSQL — IMPLEMENTADO
 
-**PLANEJADO:** adequação técnica posterior às entregas das Etapas 1 a 5, sem refazê-las. Concluir este bloco antes da API HTTP de domínio e da Etapa 6.
+**IMPLEMENTADO:** adequação concluída após as Etapas 1 a 5 e antes da API HTTP e da Etapa 6, preservando domínio e histórico de migrations.
 
-Escopo da futura implementação:
+Entrega realizada:
 
 1. Alinhar Python 3.14 em `requires-python`, `.python-version`, Dockerfile, GitHub Actions, MyPy e documentação, selecionando patches compatíveis e reproduzíveis.
 2. Revisar bibliotecas compartilhadas conforme a política híbrida, preservando versões compatíveis e lockfile próprio; adicionar dependências somente por necessidade real e via `uv`.
@@ -358,15 +360,15 @@ Escopo da futura implementação:
 
 Preservar o histórico Alembic. A migration `0001_processing_jobs` utiliza tipos portáveis de UUID e timestamps com timezone e constraints nomeadas; sua execução em PostgreSQL ainda deverá ser validada. Não excluir nem reescrever migrations indiscriminadamente. Se houver evolução necessária do schema, preferir nova revisão com justificativa e validação dos impactos.
 
-**PENDENTE:** inventariar eventuais bancos SQLite locais na futura implementação e decidir entre transferência dos dados e inicialização de PostgreSQL vazio. Não presumir que dados existentes podem ser descartados. Havendo dados relevantes, planejar backup, transferência validada, conferência de identificadores, timestamps e unicidade e possibilidade de retorno. Migração de schema via Alembic não transfere automaticamente dados entre os dois bancos.
+**PENDENTE operacional:** inventariar bancos SQLite locais antes de qualquer descarte ou transferência. A implementação não migra dados entre SQLite e PostgreSQL; dados relevantes exigem backup, transferência validada e plano de retorno.
 
 Critério de conclusão: persistência e migrations verificadas em PostgreSQL homologado, domínio e contrato preservados, testes e checks aplicáveis aprovados e operação documentada com apenas este checkout e a infraestrutura própria. Nenhuma migration, dependência ou infraestrutura é executada ou alterada nesta revisão documental.
 
 ---
 
-## API HTTP de domínio do Processing
+## API HTTP de domínio do Processing — IMPLEMENTADA
 
-**PLANEJADO:** implementar após o alinhamento técnico e antes da Etapa 6. A API atual possui apenas capacidades operacionais, como saúde e métricas; a consulta de domínio ainda não existe.
+**IMPLEMENTADO:** consulta de domínio adicionada após o alinhamento técnico e antes da Etapa 6.
 
 Endpoint inicial aprovado:
 
@@ -374,7 +376,7 @@ Endpoint inicial aprovado:
 GET /v1/processing-jobs/{processing_id}
 ```
 
-A futura implementação deverá:
+O contrato HTTP implementado:
 
 - consultar `ProcessingJob` pelo UUID próprio usando o repository e somente o banco do Processing;
 - definir schema HTTP explícito e versionado, com identidade, estado, tentativas, timestamps, correlação e diagnóstico técnico seguro quando aplicável;
@@ -386,25 +388,26 @@ A futura implementação deverá:
 
 Preservar `/health` e `/metrics`. Não adicionar outros endpoints sem justificativa funcional, nem criar upload, reprocessamento ou capacidades de Triage e Registry para demonstrar autonomia.
 
-Critério de conclusão: consulta versionada documentada e testada sobre persistência própria, com erros previsíveis e execução independente do broker. Nenhum endpoint é implementado por esta revisão documental.
+Critério atendido pela implementação: consulta versionada documentada e testada sobre persistência própria, com erros previsíveis e execução independente do broker.
 
 ---
 
 ## Etapa 6 — Integração com RabbitMQ
 
-**PLANEJADO:** implementar a aceitação durável dos eventos após concluir os dois blocos intermediários. Esta etapa não executará processamento documental real.
+**IMPLEMENTADO:** aceitação durável adicionada após os dois blocos intermediários. Esta etapa não executa processamento documental real.
 
-Decisões aprovadas para a futura implementação:
+Decisões implementadas:
 
-- usar o cliente `aio-pika` e a imagem `rabbitmq:4.3.6-management`;
+- usar `aio-pika` (resolvido com Python 3.14.4) e a imagem `rabbitmq:4.3.6-management`;
 - executar worker separado da API, com configuração e ciclo de vida próprios;
 - manter application handler independente de objetos RabbitMQ, permitindo testes sem broker;
 - consumir `document.received.v1` e validar pelo contrato implementado na Etapa 5, sem alterar seus identificadores ou a regra de `correlation_id` opcional e anulável;
 - criar `ProcessingJob` no estado `RECEIVED` (`ProcessingStatus.RECEIVED` no código atual), com `attempts=0` e UUID próprio para `processing_id`;
 - mapear `event_id` para `source_event_id` e deduplicar por essa chave, com a unicidade garantida pelo banco;
 - enviar ACK somente após commit durável ou confirmação de duplicata equivalente já persistida;
-- rejeitar mensagens permanentemente inválidas com reject sem requeue e encaminhamento para DLQ simples;
-- tratar falhas transitórias sem ACK prematuro e sem ciclos infinitos de reentrega, com comportamento de espera e recuperação explícito e testado;
+- rejeitar mensagens inválidas, conflitantes ou legadas incompletas sem requeue, após verificar/restaurar a topologia de quarentena;
+- aplicar duas tentativas locais adicionais com esperas de 1 e 5 segundos; em falhas globais do PostgreSQL, pausar o avanço, deixar a mensagem sem ACK e sondar o banco com backoff e jitter;
+- usar fila quorum, dead-lettering `at-least-once`, overflow `reject-publish` e delivery-limit explicitamente `-1`;
 - propagar W3C Trace Context nos headers de transporte, sem incluí-lo no corpo do contrato;
 - testar com produtor sintético compatível e infraestrutura própria, sem executar ou importar código do Ingestion.
 
@@ -412,13 +415,13 @@ Fluxo previsto para um evento válido novo:
 
 **Evento válido → validação → criação do ProcessingJob em RECEIVED → commit → ACK.**
 
-O ACK representa aceitação durável do evento, não conclusão do processamento documental. Preservar entrega pelo menos uma vez; não prometer processamento exatamente uma vez. Duplicata equivalente não deverá criar outro job nem incrementar tentativas; o mesmo identificador com dados incompatíveis não deverá ser reconhecido automaticamente como equivalente.
+O ACK representa aceitação durável do evento, não conclusão do processamento documental. Preservar entrega pelo menos uma vez; não prometer processamento exatamente uma vez. Duplicata equivalente não cria outro job nem incrementa tentativas. A equivalência compara event_id, document_id, correlation_id e os quatro metadados persistidos; occurred_at fica fora dessa decisão. Conflitos e registros legados sem entrada durável vão à quarentena.
 
-A aceitação durável deverá preservar também os dados validados da entrada necessários à recuperação posterior, pois o `ProcessingJob` atual não armazena a referência ao objeto, MIME, tamanho e checksum. **PENDENTE:** definir a representação persistente mínima e sua gravação atômica com o job antes de fechar os testes de ACK; isso não inclui recuperar o documento ou criar `ProcessingResult`.
+`0002_processing_input` preserva `storage_key`, `media_type`, `size_bytes` e `sha256` na linha do job como conjunto completo ou ausente. O repository cria job e entrada em uma transação; não houve alteração de domínio ou migrations nesta etapa.
 
-**PENDENTE:** documentar a integração pública AMQP, incluindo exchange, routing keys, filas, bindings, permissões, headers exatos e parâmetros de tratamento transitório e DLQ. Não inventar esses valores como contratos existentes; verificar evidências de compatibilidade sem exigir checkout ou runtime do produtor. As políticas básicas de ACK, reject e DLQ descritas acima já estão decididas.
+Defaults configuráveis: exchange `docpipe.events` (direct), routing key `document.received.v1`, fila própria `processing.document-received.v1`, DLX `processing.dlx.v1`, DLQ `processing.dead-letter.v1` e routing key de quarentena `processing.rejected.v1`. O worker verifica o exchange externo passivamente e não o redeclara com propriedades incompatíveis. O checkout do Ingestion não estava disponível; a compatibilidade real do produtor continua pendente de confirmação externa.
 
-Adicionar testes do handler, consumidor e integração com broker e PostgreSQL: entrada válida, duplicata equivalente, conflito de conteúdo, rejeição permanente, encaminhamento à DLQ, falha transitória, correlação, Trace Context e queda entre commit e ACK. A API deverá permanecer consultável sem o worker ou broker quando seu banco estiver disponível.
+Os testes incluem handler, PostgreSQL, consumidor, DLQ e reinício de broker com produtor sintético. O container-smoke inicia API e worker separados, publica evento sintético e consulta o job pela API. A API continua consultável sem worker ou broker quando o banco está disponível.
 
 Ficam fora da Etapa 6: recuperação de documentos, OCR, extração de conteúdo, `ProcessingResult`, evento de saída, outbox e reprocessamento manual. Mensagens inválidas não deverão forçar transições que violem as invariantes do domínio.
 

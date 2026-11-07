@@ -42,14 +42,15 @@ O resultado de processamento não altera o registro de ingestão. O Triage será
 O estado implementado deve ser distinguido do fluxo previsto nas seções seguintes:
 
 - `docpipe_processing/contracts.py` valida o contrato com modelos próprios; `tests/test_contracts.py` usa payloads e fixture JSON locais, sem produtor ou broker.
-- `docpipe_processing/domain.py` define `ProcessingJob` sem importar o contrato externo. `persistence.py` e `migrations/` mantêm estado próprio, SQLite por padrão e unicidade de `source_event_id`; os testes de persistência usam bancos temporários próprios.
-- `pyproject.toml`, `Dockerfile` e `.github/workflows/ci.yml` usam dependências, checkout, build e testes do Processing. A aplicação atual expõe saúde e métricas; não executa o pipeline de documentos.
+- `docpipe_processing/domain.py` define `ProcessingJob` sem importar o contrato externo. `persistence.py` e `migrations/` usam PostgreSQL próprio, mantêm entrada durável na linha de job e unicidade de `source_event_id`; os testes de persistência usam schemas isolados.
+- `application.py` e `api.py` implementam a consulta HTTP versionada. `acceptance.py` coordena validação, equivalência e criação; `consumer.py` trata transporte e ACK; `worker.py` compõe processo AMQP separado da API.
+- `pyproject.toml`, `Dockerfile`, Compose e CI usam dependências, build e testes do Processing. A API expõe `/health`, `/metrics` e `GET /v1/processing-jobs/{processing_id}`. O worker aceita eventos, mas não executa o pipeline documental.
 
-Na inspeção desses artefatos não foi encontrada dependência técnica do código, banco ou runtime do Ingestion. Isso não comprova autonomia do fluxo completo: consumidor, recuperação do objeto, extração e publicação ainda não estão implementados. Nas etapas correspondentes, será necessário demonstrar o fluxo com entradas sintéticas compatíveis e infraestrutura própria, sem outros microsserviços, incluindo substituição do produtor e ausência de consumidor posterior. Autorização de produtores também não é garantida pela validação estrutural do payload.
+Na inspeção desses artefatos não foi encontrada dependência técnica do código, banco ou runtime do Ingestion. A aceitação durável foi exercitada com produtor sintético e PostgreSQL/RabbitMQ próprios. Recuperação do objeto, extração e publicação ainda não estão implementadas. Autorização de produtores não é garantida pela validação estrutural do payload.
 
 O repositório do Ingestion não estava disponível nesta revisão; sua compatibilidade e operação independente não foram verificadas. Esta decisão registra a obrigação arquitetural, sem afirmar adequações técnicas concluídas em outros serviços.
 
-**DECIDIDO, ainda PLANEJADO tecnicamente:** migrar para PostgreSQL e evoluir a consulta HTTP antes da Etapa 6. O consumidor, a entrada durável e `ProcessingResult` ainda não estão implementados. `ProcessingJob` e o contrato de entrada já estão implementados e devem ser preservados.
+**IMPLEMENTADO:** PostgreSQL próprio, entrada durável, consulta HTTP e consumer da Etapa 6. `ProcessingJob` e o contrato público foram preservados. `ProcessingResult`, recuperação e publicação continuam futuros.
 
 ### 2.3. Componentes e direção das dependências
 
@@ -63,9 +64,9 @@ Esses limites orientam as futuras implementações sem exigir reorganização an
 
 ## 3. Contrato de entrada
 
-O contrato de entrada implementado tem nome lógico `document.received.v1` e envelope com `event_id`, `event_type: document.received`, `event_version: 1`, `occurred_at`, `correlation_id`, `document_id` e `data.storage_key`, `data.media_type`, `data.size_bytes`, `data.sha256`. As regras vigentes estão na [especificação pública](contracts/document_received_v1.md): IDs externos são strings opacas não vazias nem compostas apenas de whitespace; `correlation_id` pode estar ausente, ser `null` ou uma string válida. O `processing_id` interno continua sendo UUID, distinto dos IDs externos. O corpo não contém arquivo, URL pública ou credenciais. W3C Trace Context pertence aos headers de transporte; sua integração AMQP ainda será implementada.
+O contrato de entrada implementado tem nome lógico `document.received.v1` e envelope com `event_id`, `event_type: document.received`, `event_version: 1`, `occurred_at`, `correlation_id`, `document_id` e `data.storage_key`, `data.media_type`, `data.size_bytes`, `data.sha256`. As regras vigentes estão na [especificação pública](contracts/document_received_v1.md): IDs externos são strings opacas não vazias nem compostas apenas de whitespace; `correlation_id` pode estar ausente, ser `null` ou uma string válida. O `processing_id` interno continua sendo UUID, distinto dos IDs externos. O corpo não contém arquivo, URL pública ou credenciais. W3C Trace Context pertence aos headers de transporte e o worker o extrai dos headers disponíveis.
 
-Antes de implementar o consumidor, verificar a especificação pública de transporte e a compatibilidade do produtor quanto a exchange, routing key, fila, bindings e nomes exatos dos headers. O código do Ingestion, se disponível, é evidência complementar, sem se tornar requisito de instalação ou execução. Esses detalhes não são definidos pelo envelope e não devem ser inventados como contratos existentes. As políticas básicas de ACK durável, rejeição sem requeue e DLQ simples estão decididas na seção 4; seus parâmetros operacionais ainda precisam ser definidos. O Processing já valida a estrutura do evento; a conferência de tamanho e checksum do arquivo pertence à recuperação futura. Rejeições permanentes devem ficar diagnosticáveis, sem repetição infinita.
+O exchange `docpipe.events`, tipo `direct`, e a routing key `document.received.v1` são defaults configuráveis da referência aprovada pelo usuário, não um contrato definitivo do produtor. O checkout do Ingestion não estava disponível; sua compatibilidade precisa de confirmação externa. O Processing usa fila própria e valida a estrutura do evento. Conferência de tamanho e checksum do objeto pertence à recuperação futura.
 
 A garantia arquitetural de entrega permanece **pelo menos uma vez**, inclusive na integração prevista com o Ingestion. `event_id` é a chave para deduplicar a entrega; `document_id` identifica o documento. O recebimento repetido do mesmo evento não pode disparar duas conclusões lógicas nem duplicar resultados. Uma nova versão ou solicitação explícita de reprocessamento exigirá contrato próprio, sem reutilizar silenciosamente a mesma chave de idempotência.
 
@@ -73,7 +74,7 @@ A garantia arquitetural de entrega permanece **pelo menos uma vez**, inclusive n
 
 ### 4.1. Aceitação durável — Etapa 6
 
-**DECIDIDO, implementação PLANEJADA:** worker `aio-pika` separado da API, com application handler independente dos objetos RabbitMQ, validação pelo contrato da Etapa 5 e W3C Trace Context nos headers.
+**IMPLEMENTADO:** worker `aio-pika` separado da API, application handler independente dos objetos RabbitMQ, validação pelo contrato público e extração de Trace Context.
 
 ```text
 evento válido → validação → job RECEIVED + entrada durável → commit → ACK
@@ -81,13 +82,15 @@ evento válido → validação → job RECEIVED + entrada durável → commit �
 
 Criar `ProcessingJob.RECEIVED`, com `attempts=0`, UUID próprio em `processing_id` e `event_id` em `source_event_id`. Job e informações necessárias à continuidade serão gravados atomicamente no PostgreSQL próprio. **ACK significa aceitação durável da entrada, não conclusão do processamento documental.** Após reinicialização, não depender da mensagem original nem do runtime do produtor.
 
-ACK somente após commit da entrada nova ou confirmação de duplicata equivalente já persistida e recuperável. Redelivery não cria outro job nem incrementa tentativas. O mesmo identificador com dados incompatíveis não é automaticamente equivalente. Preservar unicidade de `source_event_id`, idempotência e entrega pelo menos uma vez.
+ACK somente após commit da entrada nova ou confirmação de duplicata equivalente já persistida e recuperável. A equivalência compara `event_id`, `document_id`, `correlation_id`, `storage_key`, `media_type`, `size_bytes` e `sha256`; `occurred_at` é excluído. Redelivery não cria outro job nem incrementa tentativas. Conflitos e jobs legados sem entrada completa seguem para quarentena. A constraint UNIQUE de `source_event_id` protege concorrência.
 
-Mensagens permanentemente inválidas serão rejeitadas sem requeue, com DLQ simples. Falhas transitórias não receberão ACK de sucesso. Parâmetros de retry limitado, equivalência, conflitos e prevenção de ciclos infinitos ainda precisam ser detalhados.
+O consumer usa ACK manual, duas tentativas locais adicionais (1 e 5 segundos) e, após falhas do PostgreSQL, mantém a entrega sem ACK, pausa novas entregas por `prefetch=1` e sonda o banco com backoff e jitter. Resultado incerto de commit é reconciliado pela chave no banco primário. Erros inesperados suspendem o worker; não são tratados como ausência nem sucesso.
 
-Queda antes do commit não permite ACK; depois do commit e antes do ACK pode produzir redelivery. Testes com produtor sintético deverão cobrir essas janelas, rollback atômico, concorrência, duplicatas, rejeição, falhas transitórias e continuidade após reinicialização.
+A fila de entrada é quorum, com dead-lettering `at-least-once`, `reject-publish` e `x-delivery-limit=-1`. Testes no RabbitMQ 4.3.6 observaram 26 redeliveries sem descarte por delivery limit, preservação de mensagem quando a DLQ cheia recuperou capacidade e mensagens persistentes após reinício do broker. Antes de rejeitar, o worker verifica/recria a topologia de quarentena. Na v1.0.0 local, RabbitMQ roda em nó único: fila quorum não oferece alta disponibilidade e a recuperação observada depende da preservação dos dados persistentes. Perda de volume, perda definitiva do nó e comportamento de cluster não foram testados nem são cobertos; também não há prova contra corrida com exclusão administrativa. Proteja os recursos do Processing e acompanhe quorum e filas.
 
-O consumer depende da conclusão da persistência durável necessária, mediante planejamento e autorização posteriores do modelo físico. A Etapa 6 não recupera documentos, executa OCR ou extração, cria `ProcessingResult`, publica saída, implementa outbox ou reprocessamento manual.
+Queda antes do commit não permite ACK; depois do commit e antes do ACK pode produzir redelivery reconhecida pela chave. Testes de resiliência descartáveis cobrem indisponibilidade prolongada antes do consumo, reinício do worker durante a falha e interrupção do PostgreSQL quando um trigger de teste observa o INSERT ativo; após a restauração, o job é aceito uma vez e não aparece na DLQ. Teste PostgreSQL/RabbitMQ fecha o canal depois do commit e antes do ACK, confirmando redelivery equivalente sem alteração do job. Fault injection com PostgreSQL real cobre resposta perdida após commit, falha antes da escrita e reconciliação indisponível; não simula perda de rede exatamente durante o protocolo COMMIT.
+
+O aceite não recupera documentos, executa OCR ou extração, cria `ProcessingResult`, publica saída, implementa outbox ou reprocessamento manual.
 
 ### 4.2. Execução posterior e publicação
 
@@ -109,28 +112,19 @@ Preservar `RECEIVED`, `PROCESSING`, `COMPLETED`, `FAILED` e suas invariantes: cr
 
 Produto técnico reutilizável vinculado ao trabalho, distinto do seu ciclo de vida. Não está implementado nem possui schema completo aprovado. Metadados, artefatos privados, vínculo, persistência e acesso serão definidos pelas necessidades reais do pipeline. Não classifica documentos, aplica validações de negócio do Triage ou consolida o `DocumentRecord` do Registry; não depende de seus modelos internos. A política para ausência de texto permanece pendente. Outbox é infraestrutura futura da Etapa 9, não produto de domínio.
 
-### 5.3. Entrada durável — requisito DECIDIDO, modelo físico PENDENTE
+### 5.3. Entrada durável — IMPLEMENTADO
 
-O job persiste as correspondências de `event_id` em `source_event_id`, `document_id` e `correlation_id`, mas não `storage_key`, `media_type`, `size_bytes` e `sha256`, necessários à recuperação e verificação posterior. Memória do worker e mensagem confirmada não são fontes duráveis para retomada.
+Os quatro campos `storage_key`, `media_type`, `size_bytes` e `sha256` estão persistidos como colunas anuláveis na linha do job e validados como todos preenchidos ou todos ausentes. Jobs legados continuam representáveis; não provam aceitação recuperável.
 
-Está aprovada uma representação mínima da entrada vinculada ao job, exclusivamente no PostgreSQL do Processing, gravada atomicamente com sua criação. Deve conservar informações necessárias à continuidade após reinicialização e preservar idempotência. Não exige armazenar o documento nem payload JSON integral. Avaliar outros dados somente quando necessários; `occurred_at` do evento não equivale a `created_at` do job.
-
-Alternativas ainda não selecionadas:
-
-| Alternativa | Trade-off a avaliar |
-| --- | --- |
-| Estender `processing_jobs` | Leitura direta, com maior mistura entre ciclo de vida e entrada |
-| Tabela própria vinculada ao job | Separação da entrada, com vínculo e transação entre tabelas |
-
-**PENDENTE de planejamento e autorização:** modelo físico, campos finais, constraints, índices, estratégia de migrations, tratamento de dados existentes e recuperação de trabalhos pendentes. O repository atual confirma a criação internamente; a futura coordenação deverá garantir um único commit para job e entrada, evitando commits separados. Aprovar o requisito não autoriza schema, migrations ou implementação técnica.
+Job e metadados da entrada são criados no mesmo commit PostgreSQL. `occurred_at` não é persistido nem substituído por `created_at`. A constraint UNIQUE de `source_event_id` protege concorrência.
 
 ## 6. Persistência e armazenamento
 
-**IMPLEMENTADO:** SQLAlchemy ORM síncrono, repository, sessões, Alembic e SQLite padrão. **DECIDIDO, migração PLANEJADA antes da Etapa 6:** PostgreSQL homologado (seção 10.1), Psycopg 3 e configuração externa `PROCESSING_DATABASE_URL`, sem fallback silencioso para SQLite após a migração.
+**IMPLEMENTADO:** SQLAlchemy ORM síncrono, repository, sessões, Alembic, PostgreSQL homologado (seção 10.1), Psycopg 3 e configuração externa `PROCESSING_DATABASE_URL`, sem fallback SQLite.
 
 Preservar ORM, histórico Alembic, integridade referencial, constraints, UUID, timestamps UTC e unicidade de `source_event_id`. Cada serviço mantém banco lógico, credenciais, schema sob sua responsabilidade e acesso exclusivo aos próprios dados. API e worker gerenciarão sessões e transações próprias, com rollback correto; distinguir conflito da constraint de evento de outros `IntegrityError`, sem tratar todo erro como duplicata.
 
-Validar `0001_processing_jobs` no PostgreSQL; não apagar nem reescrever indiscriminadamente o histórico. Avaliar novas revisões justificadas para evoluções, incluindo entrada durável. Inventariar SQLite local antes de decidir entre transferência e banco novo: dados relevantes exigem backup, transferência validada e possibilidade de retorno. Alembic migra schema, não transfere automaticamente dados entre bancos. Testes futuros usarão PostgreSQL real isolado para migrations, round-trip, UTC, unicidade, rollback e concorrência.
+As migrations `0001_processing_jobs` e `0002_processing_input` foram validadas em PostgreSQL real de teste. O histórico foi preservado. Alembic migra schema, não transfere dados de SQLite; a migração de dados locais permanece uma decisão operacional separada. Testes de persistência usam schemas isolados para round-trip, UTC, unicidade, rollback e concorrência.
 
 Para integração ponta a ponta, o produtor deve disponibilizar o original ao Processing por interface pública de armazenamento privado, como Azurite no laboratório local, sem exigir seu próprio runtime para a recuperação. A referência anterior ao caminho `dataset/documents/` do Ingestion não constitui contrato nem autoriza montá-lo como volume compartilhado; detalhes internos daquele repositório não foram verificados nesta revisão. O Processing recebe a chave opaca do evento e configura o acesso por seu próprio adaptador e credenciais de mínimo privilégio. Resultados derivados usam namespace/container próprio e nunca sobrescrevem o original.
 
@@ -142,13 +136,13 @@ Se a escrita do artefato derivado for confirmada, mas a transação do banco fal
 
 Nome provisório: `document.processed.v1`. Proposta não definitiva: envelope com identificação, tipo, versão, ocorrência, correlação e documento; dados com `processing_id`, status e referência lógica ao resultado, possivelmente páginas e modo de extração. Contrato e eventual evento de falha precisam ser definidos considerando consumidores compatíveis, sem exigir que estejam implementados ou em execução. Não transportar texto, URL pública ou credenciais; o evento não fixa o schema de `ProcessingResult`.
 
-### 7.2. API HTTP própria — DECIDIDA, implementação PLANEJADA
+### 7.2. API HTTP própria — IMPLEMENTADA
 
-Além de `/health` e `/metrics` implementados, a primeira entrega será `GET /v1/processing-jobs/{processing_id}`, após alinhamento de stack/PostgreSQL e antes da Etapa 6, conforme o PLAN.
+Além de `/health` e `/metrics`, está implementado `GET /v1/processing-jobs/{processing_id}`.
 
 A fronteira HTTP consultará `ProcessingJob` persistido pelo repository próprio, com contrato versionado, schema explícito de resposta, tratamento de identificador inválido e recurso inexistente, testes automatizados e documentação OpenAPI. A projeção não expõe modelos ORM; diagnósticos devem ser seguros, sem conteúdo documental ou segredos.
 
-Consultas aos dados persistidos não exigirão consumer, RabbitMQ ou Ingestion em execução. Não estão aprovados endpoints adicionais, recuperação do original ou exposição do texto completo. `/health` não implica readiness de componentes ainda não implementados.
+Consultas aos dados persistidos não exigem consumer, RabbitMQ ou Ingestion em execução. Não estão aprovados endpoints adicionais, recuperação do original ou exposição do texto completo. `/health` continua sendo liveness e não implica readiness do worker ou broker.
 
 ## 8. Falhas, segurança e privacidade
 
@@ -161,7 +155,7 @@ Consultas aos dados persistidos não exigirão consumer, RabbitMQ ou Ingestion e
 
 ## 9. Observabilidade e experimentos desde a Etapa 2
 
-**IMPLEMENTADO:** observabilidade HTTP com logs estruturados, métricas e tracing. Sinais do worker serão acrescentados conforme os componentes existirem, preservando correlação e W3C Trace Context. Métricas de baixa cardinalidade poderão representar recebimentos, duplicatas, tentativas, falhas, espera e duração de recuperação, extração e publicação. Identificadores não serão labels; conteúdo documental não será registrado. A stack centralizada não pertence ao serviço.
+**IMPLEMENTADO:** observabilidade HTTP e do worker com logs estruturados, métricas de baixa cardinalidade e tracing. O worker registra entregas, resultados de aceitação, falhas por categoria, suspensão/recuperação, tentativas de ACK, rejeições e duração. Identificadores não são labels; payloads e credenciais não são registrados. A stack centralizada não pertence ao serviço.
 
 A Etapa 2 preparou o protocolo em `experiments/README.md`; isso não comprova baseline do pipeline ainda inexistente. Ensaios pequenos e sintéticos serão ampliados com reentrega, reinício e indisponibilidade quando os componentes existirem. Registrar ambiente, parâmetros, conclusão, latências p50/p95/p99, backlog, tentativas, CPU e memória. Começar com uma instância antes de comparar concorrência; não inventar metas antes do baseline. A campanha de carga e resiliência pertence à Etapa 10, sem carga pesada em toda pull request.
 
@@ -181,20 +175,19 @@ A arquitetura local planejada usa FastAPI, worker separado, PostgreSQL, RabbitMQ
 
 A política abrange FastAPI, Uvicorn, Pydantic, Pydantic Settings, SQLAlchemy, Alembic, OpenTelemetry, Prometheus Client, pytest, pytest-cov, Ruff, MyPy, Typos e Taskipy, condicionadas ao uso real. Consultar referências do Ingestion não o torna dependência de build ou execução.
 
-**PLANEJADO:** alinhar `requires-python`, `.python-version`, Dockerfile, GitHub Actions e MyPy; revisar compatibilidade, patches e fixações necessárias à reprodutibilidade. Atualmente o projeto declara Python `>=3.13`, usa SQLite padrão e possui Compose vazio; MyPy já está configurado para 3.14. A decisão não representa atualização técnica concluída.
+**IMPLEMENTADO:** alinhamento Python 3.14.4, Docker, Compose, PostgreSQL e MyPy no fluxo de qualidade. As dependências AMQP foram resolvidas e verificadas com Python 3.14.4.
 
-Preservar checks `quality`, `tests` e `container-smoke`, cobertura mínima configurada de 80% e CI independente. O comando MyPy existe; sua inclusão na CI é planejada. Confirmar requisitos do ruleset antes de mudanças futuras, sem renomear checks por conveniência. Não executar carga pesada em toda pull request.
+Preservar checks `quality`, `tests` e `container-smoke`, cobertura mínima configurada de 80% e CI independente. O job `quality` já executa MyPy. Confirmar requisitos do ruleset antes de mudanças futuras, sem renomear checks por conveniência. Não executar carga pesada em toda pull request.
 
 AKS, recursos Azure reais, deployment cloud e Kubernetes ficam para `v1.1.0` ou para decisão futura do repositório integrador. A adoção de Azure Service Bus não está decidida.
 
 ## 11. Decisões pendentes antes de fixar contratos
 
-1. Definir a integração AMQP pública e verificar compatibilidade dos produtores, incluindo o Ingestion quando seus artefatos estiverem disponíveis; registrar evidências de mensagem e headers sem alterar o contrato de entrada já implementado nem exigir checkout de outro serviço.
+1. Confirmar a compatibilidade do exchange `docpipe.events` (direct), routing key `document.received.v1` e headers com artefatos públicos do Ingestion. O checkout não estava disponível nesta implementação; defaults permanecem configuráveis e não são contrato definitivo do produtor.
 2. Escolher motor(es) de extração e OCR, idiomas, dependências, licenças e limites de recursos para o ambiente do TCC.
 3. Definir política para PDF com texto parcial, ausência de texto, páginas ilegíveis e formatos corrompidos.
 4. Fixar formato e retenção do artefato derivado e regras de acesso ao texto.
 5. Fechar contrato de `document.processed.v1` e eventual evento de falha considerando consumidores compatíveis, sem exigir sua implementação.
-6. Detalhar parâmetros operacionais de tratamento transitório e DLQ, equivalência e conflitos, recuperação/lease e futuro reprocessamento manual. ACK durável, rejeição permanente sem requeue, DLQ simples e Trace Context já estão decididos.
-7. Planejar e aprovar o modelo físico da entrada durável: extensão da tabela ou tabela vinculada, constraints, índices, migrations, dados existentes e recuperação. Persistência própria e atômica é requisito aprovado, mas essas escolhas não estão.
+6. Avaliar operação em cluster, proteção dos recursos contra exclusão, monitoramento e procedimentos de recuperação da fila/DLQ. Os testes atuais são evidência de nó único, não garantia de alta disponibilidade.
 
-Essas escolhas exigem avaliação e aprovação posteriores, sem reabrir requisitos decididos nem declarar integrações implementadas. A Etapa 6 depende da persistência durável; as Etapas 7, 8 e 9 preservam os limites da seção 4. O PLAN governa a ordem e permanece preservado nesta revisão.
+As etapas futuras preservam os limites da seção 4. O PLAN distingue as entregas concluídas das capacidades futuras.
