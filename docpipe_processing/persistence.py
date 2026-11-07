@@ -43,25 +43,34 @@ from sqlalchemy.orm import (
 )
 from sqlalchemy.types import TypeDecorator
 
+from docpipe_processing.acceptance import (
+    AcceptanceStoreError,
+    AcceptanceStoreUnavailable,
+    DuplicateAcceptedEvent,
+)
 from docpipe_processing.domain import ProcessingJob, ProcessingStatus
 from docpipe_processing.processing_input import ProcessingInput
 
 DATABASE_URL_ENV_VAR = 'PROCESSING_DATABASE_URL'
 
 
-class PersistenceError(Exception):
+class PersistenceError(AcceptanceStoreError):
     """Base exception for persistence-specific failures."""
 
 
-class PersistenceConfigurationError(PersistenceError):
+class PersistenceConfigurationError(
+    PersistenceError, AcceptanceStoreUnavailable
+):
     """Raised for missing or unsupported database configuration."""
 
 
-class PersistenceUnavailableError(PersistenceError):
+class PersistenceUnavailableError(
+    PersistenceError, AcceptanceStoreUnavailable
+):
     """Raised when the database cannot complete an operation."""
 
 
-class DuplicateSourceEventError(PersistenceError):
+class DuplicateSourceEventError(PersistenceError, DuplicateAcceptedEvent):
     """Raised when a source event already has a persisted processing job."""
 
     def __init__(self, source_event_id: str) -> None:
@@ -370,7 +379,11 @@ class ProcessingJobRepository:
             raise PersistenceIntegrityError(
                 'The Processing database rejected the operation.'
             ) from None
-        except DBAPIError:
+        except DBAPIError as error:
+            if error.connection_invalidated:
+                raise PersistenceUnavailableError(
+                    'The Processing database connection was interrupted.'
+                ) from None
             raise PersistenceError(
                 'The Processing database operation failed.'
             ) from None
@@ -411,6 +424,24 @@ class ProcessingJobRepository:
                 )
             )
             return _job_from_model(model) if model is not None else None
+
+    def get_acceptance_by_source_event_id(
+        self, source_event_id: str
+    ) -> tuple[ProcessingJob, ProcessingInput | None] | None:
+        """Read the job and its durable input from one database snapshot.
+
+        A missing job returns ``None``. A legacy job with no input returns a
+        tuple whose second item is ``None`` so callers can distinguish it.
+        """
+        with self._session() as session:
+            model = session.scalar(
+                select(ProcessingJobModel).where(
+                    ProcessingJobModel.source_event_id == source_event_id
+                )
+            )
+            if model is None:
+                return None
+            return _job_from_model(model), _input_from_model(model)
 
     def get_input_by_processing_id(
         self, processing_id: UUID

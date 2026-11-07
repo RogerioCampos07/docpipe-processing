@@ -1,10 +1,11 @@
 [project]
 name = "docpipe-processing"
 version = "0.1.0"
-description = "Document processing microservice for the DocPipe pipeline, responsible for consuming ingestion events, processing stored documents, and publishing results for downstream services."
+description = "DocPipe Processing service for durable document event acceptance and ProcessingJob queries."
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
 dependencies = [
+    "aio-pika>=10.2.2",
     "alembic>=1.20.0",
     "fastapi>=0.141.1",
     "opentelemetry-api>=1.45.0",
@@ -26,6 +27,7 @@ dev = [
     "taskipy>=1.14.1",
     "typos>=1.49.0",
     "mypy>=2.3.1",
+    "pytest-asyncio>=1.4.1.post1",
 ]
 
 [tool.ruff]
@@ -49,6 +51,7 @@ markers = [
     'contract: tests for verified external contracts',
     'persistence: tests for Processing-owned persistence',
     'consumer: tests for the message consumer',
+    'resilience: destructive tests requiring explicitly disposable containers',
     'storage: tests for the storage adapter',
     'e2e: tests for the implemented end-to-end flow',
 ]

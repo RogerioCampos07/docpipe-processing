@@ -4,13 +4,11 @@ Microserviço independente de processamento documental do DocPipe. Implementa
 contrato público de entrada, `ProcessingJob`, persistência PostgreSQL e entrada
 durável. A API permite consultar `ProcessingJob`, além de `/health` e `/metrics`.
 
-**IMPLEMENTADO:** domínio, contrato `document.received.v1`, repository síncrono,
-entrada durável na própria `processing_jobs`, migrations, consulta HTTP de domínio
-e observabilidade HTTP.
-**PLANEJADO:** RabbitMQ, recuperação do original, pipeline,
-`ProcessingResult` e publicação. Nenhum worker ou ACK existe nesta entrega.
-O [DESIGN](docs/DESIGN.md) e o [PLAN](docs/PLAN.md) permanecem preservados; suas
-seções de estado observado registram a revisão documental anterior a este bloco.
+**IMPLEMENTADO:** domínio, contrato `document.received.v1`, PostgreSQL e migrations,
+entrada durável, API HTTP, consumer RabbitMQ `aio-pika`, idempotência, ACK manual,
+quarentena e métricas próprias do worker.
+**PLANEJADO:** recuperação do original, pipeline, `ProcessingResult` e publicação.
+O [DESIGN](docs/DESIGN.md) e o [PLAN](docs/PLAN.md) registram o estado atual.
 
 ## Requisitos e stack
 
@@ -20,9 +18,10 @@ seções de estado observado registram a revisão documental anterior a este blo
 - PostgreSQL **`postgres:17.11-bookworm`**, SQLAlchemy síncrono, Alembic e
   Psycopg 3 com extra `binary`, resolvido no lockfile próprio.
 
-As bibliotecas compartilhadas existentes foram preservadas. O Ingestion não
-está disponível neste ambiente; sua baseline ainda exige conferência externa.
-Instalação, build, testes e execução não dependem de outro microsserviço.
+O cliente AMQP `aio-pika` foi validado com Python 3.14.4 e está no lockfile.
+O checkout do Ingestion não estava disponível; a compatibilidade do produtor
+quanto ao exchange e aos headers ainda precisa de confirmação. Instalação, build,
+testes e execução não dependem de outro microsserviço.
 
 ## Configuração e PostgreSQL local
 
@@ -42,6 +41,10 @@ nas URLs. `.env` é lido pelo Compose; comandos `uv` usam `--env-file .env`.
 | `PROCESSING_CONTAINER_DATABASE_URL` | API em container, usuário de aplicação, host `postgres:5432`. |
 | `PROCESSING_CONTAINER_MIGRATION_URL` | Migrations em container, usuário proprietário, host `postgres:5432`. |
 | `PROCESSING_TEST_DATABASE_URL` | Banco separado cujo nome termina em `_test`; nunca o banco operacional. |
+| `PROCESSING_AMQP_URL` | Login próprio do worker; necessária somente ao worker. |
+| `PROCESSING_AMQP_ADMIN_URL`, `PROCESSING_AMQP_ADMIN_HTTP_URL` | Credenciais locais de administração usadas pelo provisionador explícito; não são usadas pela API. |
+| `PROCESSING_AMQP_EXCHANGE`, `PROCESSING_AMQP_EXCHANGE_TYPE`, `PROCESSING_AMQP_ROUTING_KEY` | Defaults configuráveis; o worker verifica o exchange externo passivamente. |
+| `PROCESSING_AMQP_QUEUE`, `PROCESSING_AMQP_DLX`, `PROCESSING_AMQP_DLQ`, `PROCESSING_AMQP_DLQ_ROUTING_KEY` | Recursos próprios do Processing para consumo e quarentena. |
 
 `PROCESSING_DATABASE_URL` é obrigatória ao configurar persistência/migrations.
 URL ausente, vazia, inválida ou diferente de `postgresql+psycopg` falha
@@ -105,6 +108,80 @@ shutdown. Não executa migrations no startup nem utiliza fallback SQLite.
 Os logs são JSON, as métricas têm baixa cardinalidade e o tracing extrai
 W3C Trace Context. Exportação OTLP é opcional por
 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`; não há stack centralizada neste serviço.
+
+## Consumer RabbitMQ
+
+A API e o worker executam separadamente. A API não exige nem conecta ao broker.
+O worker consome o contrato público `document.received.v1`; não consulta dados,
+código ou filas privadas do Ingestion. Os defaults configuráveis observados para
+compatibilidade são exchange `docpipe.events` do tipo `direct` e routing key
+`document.received.v1`. A fila própria é `processing.document-received.v1`.
+O worker verifica o exchange externo em modo passivo, preservando suas
+propriedades; não declara nem consome a fila privada do Ingestion. No código
+consultado do produtor, exchange e fila são duráveis, a mensagem usa delivery
+mode persistente, publisher confirms e `mandatory=True`, com `content_type`
+`application/json`, `content_encoding` `utf-8`, `message_id` igual a `event_id`,
+`type` `document.received.v1` e headers W3C opcionais `traceparent` e
+`tracestate`. `correlation_id` da propriedade AMQP espelha o campo do corpo; o
+Processing mantém o `correlation_id` do corpo como autoridade. Esses valores
+foram confirmados no código do Ingestion, não em um ambiente implantado; URL,
+credenciais e overrides efetivos dependem da configuração de cada ambiente. Em
+ambientes compartilhados, o produtor autorizado deve ter declarado o exchange;
+o provisionador só o cria com opt-in para ambiente isolado.
+
+Para executar localmente, complete `.env` com senhas distintas de administração
+e worker. Inicie PostgreSQL e RabbitMQ e aplique as migrations:
+
+```bash
+docker compose --profile worker up -d --wait postgres rabbitmq
+docker compose --profile tools run --rm migrate
+```
+
+Em ambiente compartilhado, não crie o exchange do produtor pelo Processing.
+Para teste isolado com evento sintético, habilite temporariamente
+`PROCESSING_AMQP_PROVISION_INPUT_EXCHANGE=true` no `.env` e execute:
+
+```bash
+docker compose --profile tools run --rm rabbitmq-provision
+docker compose --profile worker up -d --build worker
+docker compose logs -f worker
+```
+
+O provisionador configura usuário e permissões delimitadas do worker via
+RabbitMQ Management API. O worker usa somente sua URL AMQP própria. Suas métricas
+Prometheus são servidas separadamente em `127.0.0.1:9000`; `/metrics` da API não
+agrega métricas do outro processo.
+
+O worker valida o contrato sem alterar o evento. `event_id` é a chave
+`source_event_id`. Job e `ProcessingInput` são confirmados atomicamente no
+PostgreSQL antes do ACK. Uma duplicata recebe ACK somente após comparar
+`document_id`, `correlation_id`, `storage_key`, `media_type`, `size_bytes` e
+`sha256`; `occurred_at` não participa da equivalência operacional. Hashes SHA-256
+são normalizados pelo contrato. Conflitos e jobs legados sem entrada completa
+são rejeitados para quarentena. O ACK significa aceitação durável, não execução
+documental concluída.
+
+O worker usa ACK manual e `prefetch=1`. Falhas transitórias isoladas recebem
+até duas tentativas locais (1 e 5 segundos). Se PostgreSQL continuar indisponível,
+a entrega fica sem ACK e o avanço para novas mensagens é pausado até a
+recuperação, sondada com backoff e jitter. Resultado incerto de commit é
+reconciliado por `event_id`. Erros inesperados suspendem o worker para diagnóstico.
+
+A fila de origem é quorum com dead-lettering `at-least-once`, overflow
+`reject-publish` e delivery-limit desativado explicitamente (`-1`). O DLX e a
+DLQ quorum são duráveis. Antes de rejeitar uma mensagem permanente, o worker
+verifica ou repara a topologia de quarentena. Os testes reais no RabbitMQ
+4.3.6 verificaram redelivery além do limite padrão, retenção com DLQ cheia e
+recuperação após reinício do broker. Isso não prova garantias de cluster nem
+elimina corrida contra exclusão administrativa. Delivery-limit desativado
+significa que mensagens transitórias podem permanecer indefinidamente;
+monitoramento, disponibilidade do PostgreSQL e proteção dos recursos do
+Processing são necessários. Não há replay automático da DLQ.
+
+Na v1.0.0 local, RabbitMQ opera em nó único. Uma fila quorum nesse arranjo não
+fornece alta disponibilidade: a recuperação observada depende de preservar os
+dados persistentes do container. Perda do volume, perda definitiva do nó e
+comportamento em cluster não são cobertos nem prometidos nesta entrega.
 
 ## Consulta HTTP de ProcessingJob
 
@@ -188,12 +265,11 @@ MIME e chave opaca são preservados conforme o contrato.
 
 A deduplicação usa exclusivamente a UNIQUE de `source_event_id`. Somente
 SQLSTATE 23505 com a constraint correspondente vira `DuplicateSourceEventError`.
-Colisão de PK e outras violações são distintas. Duplicatas, inclusive conflitantes,
-sempre geram erro: não são automaticamente consideradas aceitas/equivalentes.
-A Etapa 6 deverá comparar identidade, correlação e os metadados persistidos e
-fechar a política do envelope: `occurred_at` não é persistido nesta entrega.
-Resultado de commit incerto por perda de conexão também exige reconciliação por
-`source_event_id`, nunca ACK antecipado. Não há promessa de exatamente uma vez.
+Colisão de PK e outras violações são distintas. A camada de aceitação compara
+identidade do documento, correlação e os metadados persistidos; `occurred_at` não
+é persistido nem participa da equivalência operacional. Resultado de commit
+incerto por perda de conexão é reconciliado por `source_event_id`, sem ACK
+antecipado. Não há promessa de exatamente uma vez.
 
 Os limites físicos do PostgreSQL continuam relevantes: TEXT não aceita U+0000,
 e IDs muito longos podem exceder o limite do índice B-tree. O contrato público
@@ -245,13 +321,16 @@ docker compose config --quiet
 docker build -t docpipe-processing:local .
 ```
 
-`task test` exige cobertura mínima de 80% e gera HTML em `htmlcov/`. A CI preserva
-`quality`, `tests` e `container-smoke`: MyPy no primeiro, PostgreSQL real no segundo,
-e migrations da imagem, execução não privilegiada, saúde/métricas e consulta de
-job sintético persistido no terceiro.
-As credenciais da CI são sintéticas e seus bancos são descartáveis.
+`task test` exige cobertura mínima de 80% e gera HTML em `htmlcov/`. A suíte
+completa também requer `PROCESSING_AMQP_URL` apontando a um vhost RabbitMQ
+descartável. O teste de reinicialização do broker requer
+`PROCESSING_RABBITMQ_CONTAINER_ID`. A CI preserva `quality`, `tests` e
+`container-smoke`: MyPy no primeiro, PostgreSQL e RabbitMQ reais no segundo, e
+migrations da imagem, runtime não privilegiado, API/worker separados, evento
+sintético, saúde/métricas e consulta HTTP no terceiro. As credenciais da CI são
+sintéticas e os serviços são descartáveis.
 
 O [contrato público](docs/contracts/document_received_v1.md) usa fixtures próprias.
 O [protocolo experimental](experiments/README.md) permanece futuro para os cenários
-que exigem worker, armazenamento e extração. Não há dependência de Ingestion,
-Triage ou Registry para as capacidades implementadas.
+que exigem armazenamento e extração. Não há dependência de Ingestion, Triage ou
+Registry para as capacidades implementadas.

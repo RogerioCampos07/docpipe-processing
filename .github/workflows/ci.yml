@@ -46,8 +46,21 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U processing_test -d processing_test"
           --health-interval 5s --health-timeout 3s --health-retries 12
+      rabbitmq:
+        image: rabbitmq:4.3.6-management
+        env:
+          RABBITMQ_DEFAULT_USER: processing_test_worker
+          RABBITMQ_DEFAULT_PASS: synthetic-rabbit-ci-only
+          RABBITMQ_DEFAULT_VHOST: processing
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q check_running"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+          --health-start-period 30s
     env:
       PROCESSING_TEST_DATABASE_URL: postgresql+psycopg://processing_test:synthetic-ci-only@127.0.0.1:5432/processing_test
+      PROCESSING_AMQP_URL: amqp://processing_test_worker:synthetic-rabbit-ci-only@127.0.0.1:5672/processing
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -58,6 +71,11 @@ jobs:
           cache-dependency-glob: uv.lock
       - run: uv python install 3.14.4
       - run: uv sync --locked
+      - name: Identify disposable RabbitMQ service
+        run: |
+          container_id="$(docker ps --filter 'ancestor=rabbitmq:4.3.6-management' --format '{{.ID}}' | head -n 1)"
+          test -n "$container_id"
+          echo "PROCESSING_RABBITMQ_CONTAINER_ID=$container_id" >> "$GITHUB_ENV"
       - run: >-
           uv run pytest --cov=docpipe_processing
           --cov-report=term-missing --cov-fail-under=80
@@ -65,7 +83,7 @@ jobs:
   container-smoke:
     name: container-smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       PROCESSING_DATABASE_URL: postgresql+psycopg://processing_test:synthetic-ci-only@127.0.0.1:5432/processing_test
     services:
@@ -80,6 +98,18 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U processing_test -d processing_test"
           --health-interval 5s --health-timeout 3s --health-retries 12
+      rabbitmq:
+        image: rabbitmq:4.3.6-management
+        env:
+          RABBITMQ_DEFAULT_USER: processing_test_worker
+          RABBITMQ_DEFAULT_PASS: synthetic-rabbit-ci-only
+          RABBITMQ_DEFAULT_VHOST: processing
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q check_running"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+          --health-start-period 30s
     steps:
       - uses: actions/checkout@v4
       - name: Build image
@@ -91,64 +121,61 @@ jobs:
           docpipe-processing:ci uv run --no-sync alembic upgrade head
       - name: Check unprivileged runtime
         run: test "$(docker run --rm docpipe-processing:ci id -u)" != 0
-      - name: Check health, metrics and persisted domain resource
+      - name: Check API and worker with a synthetic RabbitMQ event
         shell: bash
         run: |
           set -euo pipefail
-          container_name=docpipe-processing-smoke
-
-          processing_id="$(docker run --rm --interactive --network host \
-            --env PROCESSING_DATABASE_URL \
-            docpipe-processing:ci python - <<'PY'
-          from datetime import UTC, datetime
-          from uuid import uuid4
-
-          from docpipe_processing.domain import ProcessingJob
-          from docpipe_processing.persistence import (
-              ProcessingJobRepository,
-              create_database_engine,
-              create_session_factory,
-          )
-          from docpipe_processing.processing_input import ProcessingInput
-
-          processing_id = uuid4()
-          engine = create_database_engine()
-          try:
-              repository = ProcessingJobRepository(create_session_factory(engine))
-              repository.create(
-                  ProcessingJob.create(
-                      processing_id=processing_id,
-                      source_event_id=f'smoke-event-{processing_id}',
-                      document_id='smoke-document',
-                      created_at=datetime(2026, 1, 1, tzinfo=UTC),
-                  ),
-                  input=ProcessingInput(
-                      storage_key='private-smoke-object',
-                      media_type='application/pdf',
-                      size_bytes=0,
-                      sha256='0' * 64,
-                  ),
-              )
-          finally:
-              engine.dispose()
-          print(processing_id)
-          PY
-          )"
+          api_name=docpipe-processing-api-smoke
+          worker_name=docpipe-processing-worker-smoke
+          database_url='postgresql+psycopg://processing_test:synthetic-ci-only@127.0.0.1:5432/processing_test'
+          amqp_url='amqp://processing_test_worker:synthetic-rabbit-ci-only@127.0.0.1:5672/processing'
 
           cleanup() {
-            docker logs "$container_name" || true
-            docker stop --time 5 "$container_name" >/dev/null 2>&1 || true
-            docker rm "$container_name" >/dev/null 2>&1 || true
+            docker logs "$worker_name" || true
+            docker logs "$api_name" || true
+            docker stop --time 5 "$worker_name" "$api_name" >/dev/null 2>&1 || true
+            docker rm "$worker_name" "$api_name" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
 
           docker run --detach \
-            --name "$container_name" \
+            --name "$api_name" \
             --network host \
-            --env PROCESSING_DATABASE_URL \
+            --env PROCESSING_DATABASE_URL="$database_url" \
             --env PROCESSING_HOST=127.0.0.1 \
             --env PROCESSING_PORT=18000 \
             docpipe-processing:ci
+
+          docker run --rm --interactive --network host \
+            --env PROCESSING_AMQP_URL="$amqp_url" \
+            docpipe-processing:ci python - <<'PY'
+          import asyncio
+          import os
+          import aio_pika
+          from aio_pika import ExchangeType
+
+          async def declare() -> None:
+              connection = await aio_pika.connect(os.environ['PROCESSING_AMQP_URL'])
+              try:
+                  channel = await connection.channel()
+                  await channel.declare_exchange(
+                      'docpipe.events', type=ExchangeType.DIRECT, durable=True
+                  )
+              finally:
+                  await connection.close()
+
+          asyncio.run(declare())
+          PY
+
+          docker run --detach \
+            --name "$worker_name" \
+            --network host \
+            --env PROCESSING_DATABASE_URL="$database_url" \
+            --env PROCESSING_AMQP_URL="$amqp_url" \
+            --env PROCESSING_WORKER_METRICS_HOST=127.0.0.1 \
+            --env PROCESSING_WORKER_METRICS_PORT=19000 \
+            docpipe-processing:ci \
+            uv run --no-sync python -m docpipe_processing.worker
 
           healthy=0
           for attempt in {1..30}; do
@@ -163,8 +190,111 @@ jobs:
             exit 1
           fi
 
+          producer_event_id="smoke-event-$(python3 -c 'import uuid; print(uuid.uuid4())')"
+          docker run --rm --interactive --network host \
+            --env PROCESSING_AMQP_URL="$amqp_url" \
+            --env SMOKE_EVENT_ID="$producer_event_id" \
+            docpipe-processing:ci python - <<'PY'
+          import asyncio
+          import json
+          import os
+
+          import aio_pika
+          from aio_pika import DeliveryMode, ExchangeType, Message
+
+          async def publish() -> None:
+              connection = await aio_pika.connect(os.environ['PROCESSING_AMQP_URL'])
+              try:
+                  channel = await connection.channel()
+                  for attempt in range(60):
+                      if channel.is_closed:
+                          channel = await connection.channel()
+                      try:
+                          queue = await channel.declare_queue(
+                              'processing.document-received.v1',
+                              durable=True,
+                              passive=True,
+                          )
+                          if queue.declaration_result.consumer_count > 0:
+                              break
+                      except aio_pika.exceptions.ChannelClosed:
+                          await asyncio.sleep(0.5)
+                          channel = await connection.channel()
+                  else:
+                      raise RuntimeError('Processing worker did not subscribe.')
+                  exchange = await channel.declare_exchange(
+                      'docpipe.events', type=ExchangeType.DIRECT, durable=True
+                  )
+                  event_id = os.environ['SMOKE_EVENT_ID']
+                  body = json.dumps({
+                      'event_id': event_id,
+                      'event_type': 'document.received',
+                      'event_version': 1,
+                      'occurred_at': '2026-01-01T00:00:00Z',
+                      'correlation_id': None,
+                      'document_id': 'synthetic-smoke-document',
+                      'data': {
+                          'storage_key': 'synthetic-smoke-object',
+                          'media_type': 'application/pdf',
+                          'size_bytes': 0,
+                          'sha256': '0' * 64,
+                      },
+                  }).encode()
+                  await exchange.publish(
+                      Message(body, content_type='application/json',
+                              delivery_mode=DeliveryMode.PERSISTENT,
+                              message_id=event_id),
+                      routing_key='document.received.v1', mandatory=True
+                  )
+              finally:
+                  await connection.close()
+
+          asyncio.run(publish())
+          PY
+
+          processing_id=""
+          for attempt in {1..60}; do
+            processing_id="$(docker run --rm --interactive --network host \
+              --env PROCESSING_DATABASE_URL="$database_url" \
+              --env SMOKE_EVENT_ID="$producer_event_id" \
+              docpipe-processing:ci python - <<'PY'
+          import os
+          from docpipe_processing.persistence import (
+              ProcessingJobRepository, create_database_engine,
+              create_session_factory,
+          )
+          engine = create_database_engine()
+          try:
+              job = ProcessingJobRepository(create_session_factory(engine)).get_by_source_event_id(os.environ['SMOKE_EVENT_ID'])
+              if job is not None:
+                  print(job.processing_id)
+          finally:
+              engine.dispose()
+          PY
+            )"
+            if [[ -n "$processing_id" ]]; then break; fi
+            sleep 1
+          done
+          if [[ -z "$processing_id" ]]; then
+            echo 'Worker did not durably accept the synthetic event.'
+            exit 1
+          fi
+
           metrics_payload="$(curl --fail --silent --show-error http://127.0.0.1:18000/metrics)"
           grep -q 'docpipe_http_requests_total' <<< "$metrics_payload"
+          worker_accepted=0
+          for attempt in {1..30}; do
+            worker_metrics="$(curl --fail --silent --show-error http://127.0.0.1:19000/metrics)"
+            if grep -q 'docpipe_worker_acceptances_total{result="accepted"}' <<< "$worker_metrics"; then
+              worker_accepted=1
+              break
+            fi
+            sleep 0.2
+          done
+          if [[ "$worker_accepted" -ne 1 ]]; then
+            echo 'Worker acceptance metric was not recorded.'
+            exit 1
+          fi
 
           curl --fail --silent --show-error \
             "http://127.0.0.1:18000/v1/processing-jobs/$processing_id" \
@@ -176,16 +306,18 @@ jobs:
           body = json.load(sys.stdin)
           assert body == {
               "processing_id": processing_id,
-              "source_event_id": f"smoke-event-{processing_id}",
-              "document_id": "smoke-document",
+              "source_event_id": sys.argv[2],
+              "document_id": "synthetic-smoke-document",
               "correlation_id": None,
               "status": "RECEIVED",
               "attempts": 0,
-              "created_at": "2026-01-01T00:00:00Z",
-              "updated_at": "2026-01-01T00:00:00Z",
+              "created_at": body["created_at"],
+              "updated_at": body["updated_at"],
               "started_at": None,
               "finished_at": None,
               "failure_reason": None,
           }, body
+          assert body["created_at"].endswith("Z")
+          assert body["updated_at"].endswith("Z")
           print("Domain container smoke passed")
-          ' "$processing_id"
+          ' "$processing_id" "$producer_event_id"

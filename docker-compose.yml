@@ -23,6 +23,45 @@ services:
     cpus: "1.0"
     mem_limit: 512m
 
+  rabbitmq:
+    image: rabbitmq:4.3.6-management
+    profiles: [worker, tools]
+    environment:
+      RABBITMQ_DEFAULT_USER: ${PROCESSING_AMQP_ADMIN_USER:?Set RabbitMQ admin user}
+      RABBITMQ_DEFAULT_PASS: ${PROCESSING_AMQP_ADMIN_PASSWORD:?Set RabbitMQ admin password}
+      RABBITMQ_DEFAULT_VHOST: ${PROCESSING_AMQP_VHOST:-processing}
+    ports:
+      - "127.0.0.1:${PROCESSING_AMQP_PORT:-5672}:5672"
+      - "127.0.0.1:${PROCESSING_AMQP_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - processing_rabbitmq_data:/var/lib/rabbitmq/mnesia
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    cpus: "1.0"
+    mem_limit: 512m
+
+  rabbitmq-provision:
+    build: .
+    image: docpipe-processing:local
+    profiles: [tools]
+    environment:
+      PROCESSING_AMQP_ADMIN_HTTP_URL: ${PROCESSING_AMQP_CONTAINER_ADMIN_HTTP_URL:?Set container RabbitMQ admin URL}
+      PROCESSING_AMQP_ADMIN_URL: ${PROCESSING_AMQP_CONTAINER_ADMIN_URL:?Set container RabbitMQ admin AMQP URL}
+      PROCESSING_AMQP_WORKER_USER: ${PROCESSING_AMQP_WORKER_USER:?Set worker username}
+      PROCESSING_AMQP_WORKER_PASSWORD: ${PROCESSING_AMQP_WORKER_PASSWORD:?Set worker password}
+      PROCESSING_AMQP_VHOST: ${PROCESSING_AMQP_VHOST:-processing}
+      PROCESSING_AMQP_PROVISION_INPUT_EXCHANGE: ${PROCESSING_AMQP_PROVISION_INPUT_EXCHANGE:-false}
+    command: ["uv", "run", "--no-sync", "python", "-m", "docpipe_processing.provision_rabbitmq"]
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    cpus: "0.5"
+    mem_limit: 256m
+
   migrate:
     build: .
     image: docpipe-processing:local
@@ -50,5 +89,34 @@ services:
     cpus: "0.5"
     mem_limit: 256m
 
+  worker:
+    build: .
+    image: docpipe-processing:local
+    profiles: [worker]
+    environment:
+      PROCESSING_DATABASE_URL: ${PROCESSING_CONTAINER_DATABASE_URL:?Set container application URL}
+      PROCESSING_AMQP_URL: ${PROCESSING_CONTAINER_AMQP_URL:?Set container worker AMQP URL}
+      PROCESSING_AMQP_EXCHANGE: ${PROCESSING_AMQP_EXCHANGE:-docpipe.events}
+      PROCESSING_AMQP_EXCHANGE_TYPE: ${PROCESSING_AMQP_EXCHANGE_TYPE:-direct}
+      PROCESSING_AMQP_ROUTING_KEY: ${PROCESSING_AMQP_ROUTING_KEY:-document.received.v1}
+      PROCESSING_AMQP_QUEUE: ${PROCESSING_AMQP_QUEUE:-processing.document-received.v1}
+      PROCESSING_AMQP_DLX: ${PROCESSING_AMQP_DLX:-processing.dlx.v1}
+      PROCESSING_AMQP_DLQ: ${PROCESSING_AMQP_DLQ:-processing.dead-letter.v1}
+      PROCESSING_AMQP_DLQ_ROUTING_KEY: ${PROCESSING_AMQP_DLQ_ROUTING_KEY:-processing.rejected.v1}
+      PROCESSING_AMQP_HEARTBEAT_SECONDS: ${PROCESSING_AMQP_HEARTBEAT_SECONDS:-30}
+      PROCESSING_WORKER_METRICS_HOST: 0.0.0.0
+      PROCESSING_WORKER_METRICS_PORT: 9000
+    command: ["uv", "run", "--no-sync", "python", "-m", "docpipe_processing.worker"]
+    ports:
+      - "127.0.0.1:${PROCESSING_WORKER_METRICS_PORT:-9000}:9000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    cpus: "0.5"
+    mem_limit: 256m
+
 volumes:
   processing_postgres_data:
+  processing_rabbitmq_data:

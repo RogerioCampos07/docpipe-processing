@@ -1,5 +1,6 @@
 """Real PostgreSQL fixtures isolated in schemas owned by each test."""
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,10 +25,22 @@ class DatabaseFixture:
     def migrate(self, revision: str, *, downgrade: bool = False) -> None:
         config = Config(str(ALEMBIC_CONFIG))
         config.attributes['database_url'] = self.url
-        if downgrade:
-            command.downgrade(config, revision)
-        else:
-            command.upgrade(config, revision)
+        http_loggers = [
+            logging.getLogger(name)
+            for name in ('docpipe_processing.http', 'docpipe_processing.api')
+        ]
+        disabled = [logger.disabled for logger in http_loggers]
+        try:
+            if downgrade:
+                command.downgrade(config, revision)
+            else:
+                command.upgrade(config, revision)
+        finally:
+            # Alembic fileConfig can disable application loggers in-process.
+            for logger, was_disabled in zip(
+                http_loggers, disabled, strict=True
+            ):
+                logger.disabled = was_disabled
 
 
 @pytest.fixture
